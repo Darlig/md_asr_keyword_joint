@@ -70,8 +70,63 @@ def compute_dcf(y_true, y_scores, save_dir, test_id, cost_miss=1.0, cost_fa=1.0,
         f_dcf.write("DCF precision: {0}\n".format(dcf_precision))
         f_dcf.write("DCF F1: {0}\n".format(dcf_f1))
 
-def plot_result(hyp, ground_truth, save_dir, test_id):
+def _precision_at_recall(precision, recall, r, mode="max"):
+    """Return (best_precision, matched_recall, f1) at/above target recall r.
 
+    - mode="max": 在 recall >= r 的点集中，找 precision 最大的点；若有并列，取 recall 最大者。
+    - mode="interp": 在按 recall 升序插值得到 p=precision(r)，返回 (p, r, f1(p,r))。
+    """
+
+    r = float(np.clip(r, 0.0, 1.0))
+    precision = np.asarray(precision, dtype=float)
+    recall = np.asarray(recall, dtype=float)
+
+    if mode == "interp":
+        order = np.argsort(recall)
+        rec_sorted = recall[order]
+        prec_sorted = precision[order]
+        p = float(np.interp(r, rec_sorted, prec_sorted))
+        f1 = (2 * p * r) / (p + r) if (p + r) > 0.0 else 0.0
+        return p, r, f1
+
+    # mode == "max"
+    mask = (recall >= r)
+    if not np.any(mask):
+        return None, None, None  # 达不到目标 recall
+
+    idxs = np.nonzero(mask)[0]
+    prec_mask = precision[idxs]
+    max_p = np.max(prec_mask)
+
+    # 并列 precision 时取 recall 最大的那个点
+    tie_idxs = idxs[prec_mask == max_p]
+    best_idx = tie_idxs[np.argmax(recall[tie_idxs])]
+
+    best_p = float(precision[best_idx])
+    best_r = float(recall[best_idx])
+    f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
+    return best_p, best_r, f1
+#def _precision_at_recall(precision, recall, r, mode="max"):
+#    # r ∈ [0,1]
+#    r = float(np.clip(r, 0.0, 1.0))
+#    if mode == "interp":
+#        # 按 recall 升序插值
+#        order = np.argsort(recall)
+#        rec_sorted = recall[order]
+#        prec_sorted = precision[order]
+#        # np.interp 需要 x 单调递增；超界会夹到边界
+#        return float(np.interp(r, rec_sorted, prec_sorted))
+#    else:  # "max": 在 recall >= r 的子集中取最大 precision
+#        mask = (recall >= r)
+#        if not np.any(mask):
+#            return None  # 数据达不到这么高的 recall
+#	return float(np.max(precision[mask]))
+
+
+
+def plot_result(hyp, ground_truth, save_dir, test_id):
+    target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    mode = 'max'
     hyp_np = hyp.numpy()
     ground_truth_np = ground_truth.numpy()
 
@@ -109,45 +164,77 @@ def plot_result(hyp, ground_truth, save_dir, test_id):
     with open(os.path.join(save_dir, f"roc_pr_{test_id}.txt"), 'w') as f_roc:
         f_roc.write(f"ROC AUC: {roc_auc}\n")
         f_roc.write(f"PR AUC: {pr_auc}\n")
+        if target_recalls is not None:
+            if isinstance(target_recalls, (float, int)):
+                target_recalls = [float(target_recalls)]
+            pr_points = []
+            for r in target_recalls:
+                matched_p, matched_r, matched_f1 = _precision_at_recall(precision, recall, r, mode=mode)
+                if matched_p is not None:
+                    pr_points.append((r, matched_p))
+                    print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
+                    f_roc.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
+                    #f_roc.write(f"precision@recall={r:.4f} ({mode}): {p:.4f}\n")
+                else:
+                    print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
+                    f_roc.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
+
+def plot_distribution(hyp, ground_truth, save_dir, test_id):
+    hyp_np = hyp.numpy()
+    ground_truth_np = ground_truth.numpy()
+
+    pos_scores = hyp_np[ground_truth_np == 1]
+    neg_scores = hyp_np[ground_truth_np == 0]
+    n_pos = len(pos_scores)
+    n_neg = len(neg_scores)
+    print(f"num of pos: {n_pos}, num of neg: {n_neg}")
+    plt.figure(figsize=(10, 6))
+    plt.hist(pos_scores, bins=50, alpha=0.5, label=f"Positive Samples (n={n_pos})", color='g', density=True)
+    plt.hist(neg_scores, bins=50, alpha=0.5, label=f"Negative Samples (n={n_neg})", color='r', density=True)
+    plt.xlabel('Scores')
+    plt.ylabel('Density')
+    plt.title('Score Distribution Density for Positive and Negative Samples')
+    plt.legend(loc='upper right')
+    plt.savefig(os.path.join(save_dir, f"score_distribution_{test_id}.density.png"), dpi=300)
 
 def negative_data_aug(keyword, pos, negative_candidate=None):
-    ## random phone substitute
-    #keyword = unfold_list(keyword)
-    #new_keyword_idx = [i for i in range(len(keyword))]
-    #md_label = [0 for _ in range(len(keyword))]
-    #sub_idx = 1
-    #if len(new_keyword_idx)> 5:
-    #    sub_idx = random.randint(1, len(new_keyword_idx)//5)
-    #sub_idx = random.sample(new_keyword_idx, k=sub_idx)
-    #for i in new_keyword_idx:
-    #    if i in sub_idx:
-    #        current_phn = keyword[i]
-    #        sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
-    #        keyword[i] = sub_phn
-    #        md_label[i] = 1
-
-    # negative candidate from word mispronunce map
-    keyword_length = len(keyword)
-    new_keyword_idx = [i for i in range(keyword_length)]
-    md_label = [ [ 0 for phn in word ] for word in keyword ]
+    # random phone substitute
+    keyword = unfold_list(keyword)
+    new_keyword_idx = [i for i in range(len(keyword))]
+    md_label = [0 for _ in range(len(keyword))]
     sub_idx = 1
-    if len(new_keyword_idx)> 3:
-    #if len(new_keyword_idx)> 5:
-        sub_idx = random.randint(1, len(new_keyword_idx)//2)
-        #sub_idx = random.randint(1, len(new_keyword_idx)//3)
+    if len(new_keyword_idx)> 5:
+        sub_idx = random.randint(1, len(new_keyword_idx)//5)
     sub_idx = random.sample(new_keyword_idx, k=sub_idx)
-    #print(f"sub_idx: {sub_idx}")
-    assert len(negative_candidate) == 3, "negative_candidate must contain 3 candidates"
-    one_negative_candidate = random.choice(negative_candidate)
-    assert len(one_negative_candidate["phn_label"]) == len(one_negative_candidate["md_label"]), "phn_label and md_label in negative candidate must be in the same length"
-    negative_keyword_candidate = one_negative_candidate["phn_label"][pos: pos+keyword_length]
-    negative_md_candidate = one_negative_candidate["md_label"][pos: pos+keyword_length]
-    dice = random.uniform(0,1)
-    if dice > 0.3:
-        for i in new_keyword_idx:
-            if i in sub_idx:
-                keyword[i] = one_negative_candidate["phn_label"][pos + i]
-                md_label[i] = one_negative_candidate["md_label"][pos + i]
+    for i in new_keyword_idx:
+        if i in sub_idx:
+            current_phn = keyword[i]
+            sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
+            keyword[i] = sub_phn
+            md_label[i] = 1
+
+    ## negative candidate from word mispronunce map
+    #keyword_length = len(keyword)
+    #new_keyword_idx = [i for i in range(keyword_length)]
+    #md_label = [ [ 0 for phn in word ] for word in keyword ]
+    #sub_idx = 1
+    #if len(new_keyword_idx)> 3:
+    ##if len(new_keyword_idx)> 5:
+    #    sub_idx = random.randint(1, len(new_keyword_idx)//2)
+    #    #sub_idx = random.randint(1, len(new_keyword_idx)//3)
+    #sub_idx = random.sample(new_keyword_idx, k=sub_idx)
+    ##print(f"sub_idx: {sub_idx}")
+    #assert len(negative_candidate) == 3, "negative_candidate must contain 3 candidates"
+    #one_negative_candidate = random.choice(negative_candidate)
+    #assert len(one_negative_candidate["phn_label"]) == len(one_negative_candidate["md_label"]), "phn_label and md_label in negative candidate must be in the same length"
+    #negative_keyword_candidate = one_negative_candidate["phn_label"][pos: pos+keyword_length]
+    #negative_md_candidate = one_negative_candidate["md_label"][pos: pos+keyword_length]
+    #dice = random.uniform(0,1)
+    #if dice > 0.3:
+    #    for i in new_keyword_idx:
+    #        if i in sub_idx:
+    #            keyword[i] = one_negative_candidate["phn_label"][pos + i]
+    #            md_label[i] = one_negative_candidate["md_label"][pos + i]
     
     return keyword, md_label
 
@@ -170,6 +257,51 @@ def sample_keyword(phn_label, md_label=None, negative_candidate=None, n_word=2):
     md_label = torch.tensor(md_label, dtype=torch.float)
     phn_label = torch.tensor(phn_label, dtype=torch.long)
     return keyword.view(1, -1), keyword_len, md_label.view(1, -1), phn_label.view(1, -1)
+
+def sample_all_keywords(phn_label, md_label=None, negative_candidate=None, n_word=2):
+
+    phn_len = len(phn_label)
+    keywords = []
+    keyword_lens = []
+    md_labels = []
+    for pos in range(0, phn_len, n_word):
+        if pos + 2*n_word >= phn_len:
+            keyword = phn_label[pos:phn_len]
+            if md_label != None:
+                #print("given md test set")
+                kw_md_label = md_label[pos:phn_len]
+                kw_md_label = unfold_list(kw_md_label)
+            else:
+                keyword, kw_md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
+            keyword = unfold_list(keyword)
+            kw_md_label = unfold_list(kw_md_label)
+            keyword_len = torch.tensor([len(keyword)])
+            keyword = torch.tensor(keyword, dtype=torch.long)
+            kw_md_label = torch.tensor(kw_md_label, dtype=torch.float)
+            keywords.append(keyword.view(1, -1))
+            keyword_lens.append(keyword_len)
+            md_labels.append(kw_md_label.view(1, -1))
+            break
+        else:
+            keyword = phn_label[pos:pos+n_word]
+            if md_label != None:
+                #print("given md test set")
+                kw_md_label = md_label[pos:pos+n_word]
+                kw_md_label = unfold_list(kw_md_label)
+            else:
+                keyword, kw_md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
+            keyword = unfold_list(keyword)
+            kw_md_label = unfold_list(kw_md_label)
+            keyword_len = torch.tensor([len(keyword)])
+            keyword = torch.tensor(keyword, dtype=torch.long)
+            kw_md_label = torch.tensor(kw_md_label, dtype=torch.float)
+            keywords.append(keyword.view(1, -1))
+            keyword_lens.append(keyword_len)
+            md_labels.append(kw_md_label.view(1, -1))
+    phn_label = unfold_list(phn_label)
+    phn_label = torch.tensor(phn_label, dtype=torch.long)
+    
+    return keywords, keyword_lens, md_labels, phn_label.view(1, -1)
 
 def extract_fbank(wav_path, config):
     wav, sr = torchaudio.load(wav_path)
@@ -223,27 +355,33 @@ def run(config, ckpt, data_list_file, save_dir, test_id):
         #phn_label = torch.tensor([phn_label])
         #aug_keyword = aug_keyword.view(1,-1)
         fbank_feats, fbank_len = extract_fbank(wav_path, fbank_config)        
-        aug_keyword, aug_keyword_len, md_label, phn_label = sample_keyword(phn_label, md_label, negative_candidate)
-        #print(f"aug_keyword shape: {aug_keyword.shape}, aug_keyword_len shape: {aug_keyword_len.shape}, md_label shape: {md_label.shape}, phn_label shape: {phn_label.shape}")
-        #print(f"aug_keyword: {aug_keyword}, aug_keyword_len: {aug_keyword_len}")
-        #print(f"md_label: {md_label}")
-        #print(f"phn_label: {phn_label}")
-        input_data = (fbank_feats, fbank_len, aug_keyword, aug_keyword_len, md_label) 
-        det_result, asr_result = model.evaluate(input_data)
-        det_result = det_result.view(-1)
-        hyp = torch.cat([hyp, det_result], dim=-1)
-        gd = torch.cat([gd, md_label.view(-1)], dim=-1)
-        asr_result = remove_duplicates_and_blank(asr_result.view(-1))
-        one_error, one_total, one_cer = compute_cer(asr_result, phn_label.view(-1), detail=True)
-        e += one_error
-        t += one_total
+        aug_keywords, aug_keyword_lens, aug_md_labels, phn_label = sample_all_keywords(phn_label, md_label, negative_candidate, n_word=4)
+        #aug_keyword, aug_keyword_len, md_label, phn_label = sample_keyword(phn_label, md_label, negative_candidate)
+        for i in range(len(aug_keywords)):
+            aug_keyword = aug_keywords[i]
+            aug_keyword_len = aug_keyword_lens[i]
+            aug_md_label = aug_md_labels[i]
+            #print(f"aug_keyword shape: {aug_keyword.shape}, aug_keyword_len shape: {aug_keyword_len.shape}, md_label shape: {md_label.shape}, phn_label shape: {phn_label.shape}")
+            #print(f"aug_keyword: {aug_keyword}, aug_keyword_len: {aug_keyword_len}")
+            #print(f"md_label: {md_label}")
+            #print(f"phn_label: {phn_label}")
+            input_data = (fbank_feats, fbank_len, aug_keyword, aug_keyword_len, aug_md_label) 
+            det_result, asr_result = model.evaluate(input_data)
+            det_result = det_result.view(-1)
+            hyp = torch.cat([hyp, det_result], dim=-1)
+            gd = torch.cat([gd, aug_md_label.view(-1)], dim=-1)
+            asr_result = remove_duplicates_and_blank(asr_result.view(-1))
+            one_error, one_total, one_cer = compute_cer(asr_result, phn_label.view(-1), detail=True)
+            e += one_error
+            t += one_total
     print (1.0*e/t)
     with open(os.path.join(save_dir, f"cer_{test_id}.txt"), 'w') as f_cer:
         f_cer.write(f"CER: {1.0*e/t}\n")
     plot_result(hyp, gd, save_dir, test_id) 
+    plot_distribution(hyp, gd, save_dir, test_id) 
     #compute_dcf(gd, hyp, save_dir, test_id, prior_target=0.5)
-    #compute_dcf(gd, hyp, save_dir, test_id, prior_target=l2arctic_prior)
-    compute_dcf(gd, hyp, save_dir, test_id)
+    compute_dcf(gd, hyp, save_dir, test_id, prior_target=l2arctic_prior)
+    #compute_dcf(gd, hyp, save_dir, test_id)
 
 if __name__ == '__main__':
 

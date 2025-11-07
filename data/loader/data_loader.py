@@ -5,6 +5,7 @@ import random
 import copy
 import data.loader.factory as factory
 import torch.distributed as dist 
+import json
 
 from typing_extensions import Tuple, List, Dict, Optional, Any, Iterator
 from local.utils import read_list
@@ -190,6 +191,7 @@ def Dataset(conf: Dict,  d_list: List) -> Tuple[Any, ...]:
     # init data list config & corruption config (self corruption and data augmentation)
     data_list_config = dict()
     corruption_config = dict()
+    phone_seq_config = dict()
     data_list_config.update({
         "lists": d_list,
         'shuffle': conf.get('shuffle', True)
@@ -238,9 +240,14 @@ def Dataset(conf: Dict,  d_list: List) -> Tuple[Any, ...]:
             crpt_list = copy.deepcopy(d_list)
             random.shuffle(crpt_list)
             keyword_config.update({'neg_len': 70})
-            dataset = Processer(dataset, factory.process_sampled_keyword_from_label,  **keyword_config)
+            phone_seq_config.update(keyword_config)
+            phonetic_auxiliary = keyword_config.get('phonetic_auxiliary', None)
+            if phonetic_auxiliary != None:
+                with open(phonetic_auxiliary) as f_aux:
+                    phone_seq_config.update({'phonetic_auxiliary': json.load(f_aux)})
+            dataset = Processer(dataset, factory.process_sampled_keyword_from_label,  **phone_seq_config)
         elif keyword_format == 'fix':
-            dataset = Processer(dataset, factory.process_fix_keyword, **keyword_config)
+            dataset = Processer(dataset, factory.process_fix_keyword, **phone_seq_config)
         elif keyword_format == 'test':
             pass
         else:

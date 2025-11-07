@@ -534,7 +534,7 @@ def detach_corruption(material: Dict) -> Tuple[List, List, List, List, List, Lis
 def inject_special_token(
         keyword: List[int], keyword_length: int, label: List=None, 
         positive: bool=True, keyword_pos: int=None, special_token: Dict={}, bpe_label: List=None, 
-        bpe_candidate: List=None
+        bpe_candidate: List=None, phonetic_auxiliary: Dict={}
     )->Tuple[List, List, List, int]:
     TEXT_SPEC_TOKEN.update(special_token)
     new_phn_label = copy.deepcopy(label)
@@ -573,14 +573,21 @@ def inject_special_token(
         md_label = [0 for _ in range(len(new_keyword))]
         sub_idx = 1
         if len(new_keyword_idx)> 5:
-            sub_idx = random.randint(1, len(new_keyword_idx)//3)
+            sub_idx = random.randint(1, len(new_keyword_idx)//2)
+            #sub_idx = random.randint(1, len(new_keyword_idx)//3)
         sub_idx = random.sample(new_keyword_idx, k=sub_idx)
         dice = random.uniform(0,1)
-        if dice > 0.3:
+        if dice > 0.1:
+        #if dice > 0.3:
             for i in new_keyword_idx:
                 if i in sub_idx:
                     current_phn = new_keyword[i]
-                    sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
+                    if current_phn in phonetic_auxiliary['vowel']:
+                        sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
+                    elif current_phn in phonetic_auxiliary['consonant']:
+                        sub_phn = random.choice([x for x in phonetic_auxiliary['consonant'] if x != current_phn])
+                    else:
+                        sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
                     new_keyword[i] = sub_phn
                     md_label[i] = 1
     if not positive:
@@ -647,7 +654,7 @@ def make_keyword_dump(sample, positive_prob, neg_len=None):
 
 # sample positive keyword from asr label
 def sample_kw_from_label(label: List, kw_candidate: List=None, max_keyword_len: int=6)->Tuple[List, int]:
-    kw_len = random.randint(2, max_keyword_len)
+    kw_len = random.randint(4, max_keyword_len)
     if kw_candidate: #TODO: a little bit confuse ...  optim it latter
         kw_len = kw_len if kw_len < len(kw_candidate) else 1
         kw_pos_idx = random.randint(0, len(kw_candidate)-kw_len-1) if len(kw_candidate) > kw_len+1 else 0

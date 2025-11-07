@@ -393,7 +393,7 @@ def process_text_feats_dump(data, neg_token=None, sc_token=None):
 
 # Process: sample keyword from continues label
 def process_sampled_keyword_from_label(
-        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, max_keyword_len: int=6
+        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, max_keyword_len: int=8
 ):
     # TEXT_SPEC_TOKEN = {'sos','eos','sok', 'eok', 'unk'}
     # sos: start of setence, eos: end of setence, sok: start of keyword, eok, end of keyword, unk: unknow token

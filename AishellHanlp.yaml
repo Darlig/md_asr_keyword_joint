@@ -50,7 +50,8 @@ model_config:
 # experimental config
 exp_config:
   trained_ckpt: ""
-  exp_dir: exp/md_10k_data_double_cross_attention
+  exp_dir: exp/md_10k_data_double_cross_attention_pos0.1_word0.8_m4_m8
+  #exp_dir: exp/md_10k_data_double_cross_attention
   warm_up_peak_epoch: 10
   exp_name: kwatt_asr
   optim_config:
@@ -65,14 +66,15 @@ exp_config:
 # data config
 data_config: &base_data_config
   epoch: 250
-  start_epoch: 87
+  start_epoch: 0
+  #start_epoch: 87
   shuffle: True
   num_worker: 30
   sph_config: !include config/base_config/self_corrupt_none_target_corrupt.yaml
   keyword_config:
     format: sample
     config:
-      positive_prob: 0.6
+      positive_prob: 1.0
       special_token:
         sok: 1
         eok: 2
@@ -83,7 +85,7 @@ data_config: &base_data_config
         with_trans: True
   length_key: mixspeech,speech,keyword
   fetch_key: mixspeech,mixspeech_len,phn_label,phn_label_len,keyword,keyword_len,md_label,md_label_len,target
-  batch_size: 32
+  batch_size: 128
   data_list: md_data_list/datalist.10k.txt.phn.short
   valid_list: md_data_list/dev.datalist
 

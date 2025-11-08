@@ -5,10 +5,136 @@ import random
 import copy
 import data.loader.factory as factory
 import torch.distributed as dist 
+import json
 
 from typing_extensions import Tuple, List, Dict, Optional, Any, Iterator
 from local.utils import read_list
 from torch.utils.data import IterableDataset
+
+class MergeBatches(IterableDataset):
+    # This class merges batches from multiple sources, where each source yields a list of samples (not a dict).
+    # At each step, it pulls one list-batch from each source, concatenates them, and yields the merged list.
+    # If a source is exhausted, the behavior depends on exhaust_policy:
+    #   - 'repeat_shorter': re-initialize the iterator for that source and continue.
+    #   - 'stop_shortest': stop merging and end iteration.
+    def __init__(self, sources: List[IterableDataset], exhaust_policy: str = 'stop_shortest'):
+        self.sources = sources
+        assert exhaust_policy in ['stop_shortest', 'repeat_shorter']
+        self.exhaust_policy = exhaust_policy
+
+    def set_epoch(self, epoch: int) -> None:
+        for s in self.sources:
+            if hasattr(s, 'set_epoch'):
+                s.set_epoch(epoch)
+
+    def __iter__(self):
+        # Each source is expected to yield batches in list form (list of sample dicts).
+        iters = [iter(s) for s in self.sources]
+        while True:
+            batches = []
+            for i, it in enumerate(iters):
+                try:
+                    b = next(it)
+                except StopIteration:
+                    if self.exhaust_policy == 'repeat_shorter':
+                        iters[i] = iter(self.sources[i])
+                        b = next(iters[i])
+                    else:
+                        return
+                if not isinstance(b, list):
+                    raise TypeError(f"MergeBatches expects list batches, got {type(b)}")
+                batches.append(b)
+            # print(f"sub batche sizes: {[list(len(b) for b in batches)]}")
+            merged = []
+            for b in batches:
+                merged.extend(b)
+            # print(f"Merged batch size: {len(merged)}")
+            yield merged
+
+def build_dataset_until_batch(conf: Dict, d_list: List) -> IterableDataset:
+    # --- This mirrors the single-dataset path up to make_batch ---
+    sph_config = conf.get('sph_config', None)
+    if not sph_config:
+        raise NotImplementedError(
+            """sph_config should be specificed, there are no any default config for speech feats"""
+        )
+    data_list_config = dict()
+    corruption_config = dict()
+    phone_seq_config = dict()
+    data_list_config.update({
+        "lists": d_list,
+        'shuffle': conf.get('shuffle', True)
+    })
+    if sph_config.get('self_corruption', False):
+        corruption_config.update({'self_corruption': sph_config.get('self_corruption')})
+        data_list_config.update({'self_corruption': True})
+    if sph_config.get('none_target_corruption', False):
+        corruption_config.update({'none_target_corruption': sph_config.get('none_target_corruption')})
+        none_target_corruption_list = corruption_config['none_target_corruption']['corrupt_list']
+        none_target_corruption_list = read_list(none_target_corruption_list)
+        data_list_config.update({'none_target_corruption_list': none_target_corruption_list})
+    if sph_config.get('rirs_list', False):
+        rirs_list = sph_config['rirs_list']
+        rirs_list = read_list(rirs_list)
+        data_list_config.update({'rirs_list': rirs_list})
+    dataset = DataList(**data_list_config)
+    dataset = Processer(dataset, factory.process_raw)
+    if len(corruption_config) > 0:
+        dataset = Processer(dataset, factory.process_corruption, corruption_config)
+    dataset = Processer(dataset, factory.process_speech_feats, sph_config)
+    text_config = conf.get('text_config', {})
+    dataset = Processer(dataset, factory.process_text_feats, **text_config)
+    keyword_setting = conf.get('keyword_config', None)
+    if isinstance(keyword_setting, dict):
+        keyword_format = keyword_setting.get('format')
+        assert keyword_format in ['sample', 'sample_md', 'fix', 'test']
+        keyword_config = keyword_setting.get('config', {})
+        if keyword_format == 'sample_md':
+            crpt_list = copy.deepcopy(d_list)
+            random.shuffle(crpt_list)
+            keyword_config.update({'neg_len': 70})
+            phone_seq_config.update(keyword_config)
+            phonetic_auxiliary = keyword_config.get('phonetic_auxiliary', None)
+            if phonetic_auxiliary != None:
+                with open(phonetic_auxiliary) as f_aux:
+                    phone_seq_config.update({'phonetic_auxiliary': json.load(f_aux)})
+            dataset = Processer(dataset, factory.process_sampled_keyword_from_label_md,  **phone_seq_config)
+        elif keyword_format == 'sample':
+            crpt_list = copy.deepcopy(d_list)
+            random.shuffle(crpt_list)
+            keyword_config.update({'neg_len': 70})
+            phone_seq_config.update(keyword_config)
+            phonetic_auxiliary = keyword_config.get('phonetic_auxiliary', None)
+            if phonetic_auxiliary != None:
+                with open(phonetic_auxiliary) as f_aux:
+                    phone_seq_config.update({'phonetic_auxiliary': json.load(f_aux)})
+            dataset = Processer(dataset, factory.process_sampled_keyword_from_label,  **phone_seq_config)
+        elif keyword_format == 'fix':
+            dataset = Processer(dataset, factory.process_fix_keyword, **keyword_config)
+        elif keyword_format == 'test':
+            pass
+        else:
+            raise NotImplementedError("keyword format only Support <sample> / <fix_with_segment>")
+    elif keyword_setting != None:
+        raise NotImplementedError("keyword config should be dict")
+    sot_label_config = conf.get('sot_config', None)
+    if sot_label_config:
+        dataset = Processer(dataset, factory.process_sot_label, **sot_label_config)
+    permuate_label_config = conf.get('permuate_label_config', None)
+    if permuate_label_config:
+        dataset = Processer(dataset, factory.process_permuate_label, **permuate_label_config)
+    conditional_chain_config = conf.get('conditional_chain', None)
+    if conditional_chain_config:
+        dataset = Processer(dataset, factory.process_conditional_chain_label, **conditional_chain_config)
+    permuate_with_keyword_config = conf.get('permuate_with_keyword', None)
+    if permuate_with_keyword_config:
+        permuate_with_keyword_config.update({'neg_len': 20})
+        dataset = Processer(dataset, factory.process_permuate_label_with_keyword, **permuate_with_keyword_config)
+    dataset = Processer(dataset, factory.process_list_data)
+    dataset = Processer(dataset, factory.make_length)
+    dataset = Processer(dataset, factory.make_batch, conf.get('batch_size', 256))
+    # print(f"dataset type: {type(dataset)}")
+    return dataset
 
 
 class Processer(IterableDataset):
@@ -179,6 +305,30 @@ class DataList(IterableDataset):
 
 
 def Dataset(conf: Dict,  d_list: List) -> Tuple[Any, ...]:
+    # MULTI-DATASET MODE
+    multi = conf.get('multi_datasets', None)
+    # print(f"multi: {multi}")
+    if multi is not None:
+        assert isinstance(d_list, dict), "In multi_datasets mode, d_list must be a dict mapping datalist_key to list"
+        per_ds = []
+        # print(f"multi[datasets]: {multi['datasets']}")
+        for ds_entry in multi['datasets']:
+            # print(f"ds_entry: {ds_entry}")
+            dl_key = ds_entry['datalist_key']
+            sub_conf = ds_entry['conf']
+            per_ds.append(build_dataset_until_batch(sub_conf, d_list[dl_key]))
+        # print(f"per_ds length: {len(per_ds)}")
+        merged = MergeBatches(per_ds, exhaust_policy=multi.get('exhaust_policy', 'stop_shortest'))
+        # Final fetch_tensor after merge
+        fetch_key = multi.get('fetch_key') or conf.get('fetch_key', None)
+        if fetch_key is None:
+            fetch_key = ['speech', 'label', 'keyword']
+        elif isinstance(fetch_key, str):
+            fetch_key = fetch_key.split(',')
+        dataset = Processer(merged, factory.fetch_tensor, fetch_key)
+        return dataset
+
+    # SINGLE-DATASET MODE (original code)
     # check speech config
     sph_config = conf.get('sph_config', None)
     if not sph_config:
@@ -190,6 +340,7 @@ def Dataset(conf: Dict,  d_list: List) -> Tuple[Any, ...]:
     # init data list config & corruption config (self corruption and data augmentation)
     data_list_config = dict()
     corruption_config = dict()
+    phone_seq_config = dict()
     data_list_config.update({
         "lists": d_list,
         'shuffle': conf.get('shuffle', True)
@@ -238,7 +389,12 @@ def Dataset(conf: Dict,  d_list: List) -> Tuple[Any, ...]:
             crpt_list = copy.deepcopy(d_list)
             random.shuffle(crpt_list)
             keyword_config.update({'neg_len': 70})
-            dataset = Processer(dataset, factory.process_sampled_keyword_from_label,  **keyword_config)
+            phone_seq_config.update(keyword_config)
+            phonetic_auxiliary = keyword_config.get('phonetic_auxiliary', None)
+            if phonetic_auxiliary != None:
+                with open(phonetic_auxiliary) as f_aux:
+                    phone_seq_config.update({'phonetic_auxiliary': json.load(f_aux)})
+            dataset = Processer(dataset, factory.process_sampled_keyword_from_label,  **phone_seq_config)
         elif keyword_format == 'fix':
             dataset = Processer(dataset, factory.process_fix_keyword, **keyword_config)
         elif keyword_format == 'test':

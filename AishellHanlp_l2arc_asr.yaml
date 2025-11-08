@@ -50,7 +50,7 @@ model_config:
 # experimental config
 exp_config:
   trained_ckpt: ""
-  exp_dir: exp/md_10k_data_double_cross_attention_pos0.1_word0.5_vow_con_ft_l2_train_md_sph_label_b_1_3
+  exp_dir: exp/md_10k_data_double_cross_attention_pos0.1_word0.5_vow_con_ft_l2_train_md_asr_b_1_3
   #exp_dir: exp/md_10k_data_double_cross_attention
   warm_up_peak_epoch: 10
   exp_name: kwatt_asr
@@ -104,7 +104,7 @@ data_config: &base_data_config
         #num_worker: 30
         sph_config: !include config/base_config/self_corrupt_none_target_corrupt.yaml
         keyword_config:
-          format: sample_md
+          format: sample
           config:
             positive_prob: 1.0
             special_token:
@@ -121,10 +121,10 @@ data_config: &base_data_config
         batch_size: 8
         #batch_size: 32
         #batch_size: 128
-        data_list: md_data_list/datalist.train.l2arctic_mdd_sph_label.txt
+        data_list: md_data_list/datalist.train.l2arctic_mdd_asr.txt
         #data_list: md_data_list/datalist.train.l2arctic_corr2.txt
         #data_list: md_data_list/datalist.10k.txt.phn.short
-        valid_list: md_data_list/datalist.train.l2arctic_mdd_sph_label.samp100.txt
+        valid_list: md_data_list/datalist.train.l2arctic_mdd_asr.samp100.txt
         #valid_list: md_data_list/dev.datalist
 
     total_batch_size: 24

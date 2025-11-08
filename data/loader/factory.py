@@ -393,7 +393,7 @@ def process_text_feats_dump(data, neg_token=None, sc_token=None):
 
 # Process: sample keyword from continues label
 def process_sampled_keyword_from_label(
-        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, max_keyword_len: int=6
+        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, max_keyword_len: int=8, phonetic_auxiliary: Dict = {}
 ):
     # TEXT_SPEC_TOKEN = {'sos','eos','sok', 'eok', 'unk'}
     # sos: start of setence, eos: end of setence, sok: start of keyword, eok, end of keyword, unk: unknow token
@@ -414,7 +414,41 @@ def process_sampled_keyword_from_label(
         )
         kw, new_phn_label, new_bpe_label, kw_pos, md_label = utils.inject_special_token(
             keyword=kw, keyword_length=kw_length, positive=pos, label=new_phn_label, 
-            keyword_pos=kw_pos, special_token=special_token,  bpe_label=new_bpe_label, bpe_candidate=bpe_candidate
+            keyword_pos=kw_pos, special_token=special_token,  bpe_label=new_bpe_label, bpe_candidate=bpe_candidate,
+	    phonetic_auxiliary=phonetic_auxiliary
+        )
+
+        sample.update({'keyword': kw, 'phn_label': new_phn_label, 'bpe_label': new_bpe_label, 'target': target, 'md_label': md_label}) 
+        yield sample
+
+
+# Process: sample keyword from continues label
+def process_sampled_keyword_from_label_md(
+        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, max_keyword_len: int=8, phonetic_auxiliary: Dict = {}
+):
+    # TEXT_SPEC_TOKEN = {'sos','eos','sok', 'eok', 'unk'}
+    # sos: start of setence, eos: end of setence, sok: start of keyword, eok, end of keyword, unk: unknow token
+    TEXT_SPEC_TOKEN.update(special_token)
+    for sample in data:
+        new_sph_label = copy.deepcopy(sample['sph_label'])
+        new_phn_label = copy.deepcopy(sample['phn_label'])
+        md_label = copy.deepcopy(sample['md_label'])
+        if 'bpe_label' in sample:
+            new_bpe_label = copy.deepcopy(sample['bpe_label'])
+            bpe_candidate = copy.deepcopy(sample['b_kw_candidate'])
+        else:
+            new_bpe_label = copy.deepcopy(new_phn_label)
+            bpe_candidate = copy.deepcopy(sample['kw_candidate'])
+        corrupt_label = None if 'mix_phn_label' not in sample else sample['mix_phn_label']
+        kw, kw_pos, kw_length, pos, target, md_label = utils.make_keyword_md(
+            candidate_seq=new_phn_label, negative_seq=sample['neg_candidate'], md_label=md_label,
+            positive_prob=positive_prob, neg_len=neg_len, kw_position_candidate=sample['kw_candidate'],
+            corrupt_label=corrupt_label, max_keyword_len=max_keyword_len
+        )
+        kw, new_sph_label, new_bpe_label, kw_pos, md_label = utils.inject_special_token_md(
+            keyword=kw, keyword_length=kw_length, positive=pos, label=new_sph_label, 
+            keyword_pos=kw_pos, special_token=special_token,  bpe_label=new_bpe_label, bpe_candidate=bpe_candidate,
+	    phonetic_auxiliary=phonetic_auxiliary, md_label=md_label
         )
 
         sample.update({'keyword': kw, 'phn_label': new_phn_label, 'bpe_label': new_bpe_label, 'target': target, 'md_label': md_label}) 

@@ -6,6 +6,7 @@ import torchaudio
 import torch
 import random
 import os
+import argparse
 
 import torchaudio.compliance.kaldi as kaldi
 import numpy as np
@@ -70,6 +71,42 @@ def compute_dcf(y_true, y_scores, save_dir, test_id, cost_miss=1.0, cost_fa=1.0,
         f_dcf.write("DCF precision: {0}\n".format(dcf_precision))
         f_dcf.write("DCF F1: {0}\n".format(dcf_f1))
 
+def _recall_at_precision(precision, recall, p, mode="max"):
+    """Return (best_recall, matched_precision, f1) at/above target precision p.
+
+    - mode="max": 在 precision >= p 的点集中，找 recall 最大的点；若有并列，取 precision 最小者。
+    - mode="interp": 在按 precision 升序插值得到 r=recall(p)，返回 (r, p, f1(p,r))。
+    """
+    p = float(np.clip(p, 0.0, 1.0))
+    precision = np.asarray(precision, dtype=float)
+    recall = np.asarray(recall, dtype=float)
+
+    if mode == "interp":
+        order = np.argsort(precision)
+        prec_sorted = precision[order]
+        rec_sorted = recall[order]
+        r = float(np.interp(p, prec_sorted, rec_sorted))
+        f1 = (2 * p * r) / (p + r) if (p + r) > 0.0 else 0.0
+        return r, p, f1
+
+    # mode == "max"
+    mask = (precision >= p)
+    if not np.any(mask):
+        return None, None, None  # 达不到目标 precision
+
+    idxs = np.nonzero(mask)[0]
+    rec_mask = recall[idxs]
+    max_r = np.max(rec_mask)
+
+    # 并列 recall 时取 precision 最小的那个点
+    tie_idxs = idxs[rec_mask == max_r]
+    best_idx = tie_idxs[np.argmin(precision[tie_idxs])]
+
+    best_r = float(recall[best_idx])
+    best_p = float(precision[best_idx])
+    f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
+    return best_r, best_p, f1
+
 def _precision_at_recall(precision, recall, r, mode="max"):
     """Return (best_precision, matched_recall, f1) at/above target recall r.
 
@@ -106,26 +143,11 @@ def _precision_at_recall(precision, recall, r, mode="max"):
     best_r = float(recall[best_idx])
     f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
     return best_p, best_r, f1
-#def _precision_at_recall(precision, recall, r, mode="max"):
-#    # r ∈ [0,1]
-#    r = float(np.clip(r, 0.0, 1.0))
-#    if mode == "interp":
-#        # 按 recall 升序插值
-#        order = np.argsort(recall)
-#        rec_sorted = recall[order]
-#        prec_sorted = precision[order]
-#        # np.interp 需要 x 单调递增；超界会夹到边界
-#        return float(np.interp(r, rec_sorted, prec_sorted))
-#    else:  # "max": 在 recall >= r 的子集中取最大 precision
-#        mask = (recall >= r)
-#        if not np.any(mask):
-#            return None  # 数据达不到这么高的 recall
-#	return float(np.max(precision[mask]))
-
 
 
 def plot_result(hyp, ground_truth, save_dir, test_id):
-    target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    target_precisions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    #target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     mode = 'max'
     hyp_np = hyp.numpy()
     ground_truth_np = ground_truth.numpy()
@@ -164,20 +186,30 @@ def plot_result(hyp, ground_truth, save_dir, test_id):
     with open(os.path.join(save_dir, f"roc_pr_{test_id}.txt"), 'w') as f_roc:
         f_roc.write(f"ROC AUC: {roc_auc}\n")
         f_roc.write(f"PR AUC: {pr_auc}\n")
-        if target_recalls is not None:
-            if isinstance(target_recalls, (float, int)):
-                target_recalls = [float(target_recalls)]
+        if target_precisions is not None:
+            if isinstance(target_precisions, (float, int)):
+                target_precisions = [float(target_precisions)]
             pr_points = []
-            for r in target_recalls:
-                matched_p, matched_r, matched_f1 = _precision_at_recall(precision, recall, r, mode=mode)
-                if matched_p is not None:
-                    pr_points.append((r, matched_p))
-                    print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
-                    f_roc.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
+            #for r in target_recalls:
+            #    matched_p, matched_r, matched_f1 = _precision_at_recall(precision, recall, r, mode=mode)
+            #    if matched_p is not None:
+            #        pr_points.append((r, matched_p))
+            #        print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
+            #        f_roc.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
+            #        #f_roc.write(f"precision@recall={r:.4f} ({mode}): {p:.4f}\n")
+            #    else:
+            #        print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
+            #        f_roc.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
+            for p in target_precisions:
+                matched_r, matched_p, matched_f1 = _recall_at_precision(precision, recall, p, mode=mode)
+                if matched_r is not None:
+                    #pr_points.append((r, matched_p))
+                    print(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
+                    f_roc.write(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
                     #f_roc.write(f"precision@recall={r:.4f} ({mode}): {p:.4f}\n")
                 else:
-                    print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
-                    f_roc.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
+                    print(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)")
+                    f_roc.write(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)\n")
 
 def plot_distribution(hyp, ground_truth, save_dir, test_id):
     hyp_np = hyp.numpy()
@@ -312,7 +344,7 @@ def extract_fbank(wav_path, config):
     fbank_len, dim = fbank.size()
     return fbank.view(1, fbank_len, dim), torch.tensor([fbank_len], dtype=torch.long)
 
-def run(config, ckpt, data_list_file, save_dir, test_id):
+def run(config, ckpt, data_list_file, save_dir, test_id, num_add):
     
     os.makedirs(save_dir, exist_ok=True)
     ckpt = torch.load(ckpt, map_location='cpu')
@@ -377,6 +409,9 @@ def run(config, ckpt, data_list_file, save_dir, test_id):
     print (1.0*e/t)
     with open(os.path.join(save_dir, f"cer_{test_id}.txt"), 'w') as f_cer:
         f_cer.write(f"CER: {1.0*e/t}\n")
+    # add sample to hyp and gd, as if none of addition errors is detected, make recall comparable
+    hyp = torch.cat([hyp, torch.zeros(num_add, dtype=hyp.dtype, device=hyp.device)], dim=-1)
+    gd = torch.cat([gd, torch.ones(num_add, dtype=gd.dtype, device=gd.device)], dim=-1)
     plot_result(hyp, gd, save_dir, test_id) 
     plot_distribution(hyp, gd, save_dir, test_id) 
     #compute_dcf(gd, hyp, save_dir, test_id, prior_target=0.5)
@@ -384,18 +419,30 @@ def run(config, ckpt, data_list_file, save_dir, test_id):
     #compute_dcf(gd, hyp, save_dir, test_id)
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
 
-    if len(sys.argv) != 6:
-        print(f"Usage: python {sys.argv[0]} <config> <checkpoint> <data-list-file> <save-dir> <test-id>")
-        exit()
-    config = sys.argv[1]
-    ckpt = sys.argv[2]
-    data_list_file = sys.argv[3]
-    save_dir = sys.argv[4]
-    test_id = sys.argv[5]
+    parser.add_argument("config")
+    parser.add_argument("checkpoint")
+    parser.add_argument("data_list_file")
+    parser.add_argument("save_dir")
+    parser.add_argument("test_id")
+
+    # 新增参数，有默认值
+    parser.add_argument("--num-add", type=int, default=0,
+                        help="number of addition error which is removed from datalist, for recall punishment")
+
+    args = parser.parse_args()
+
+    config = args.config
+    ckpt = args.checkpoint
+    data_list_file = args.data_list_file
+    save_dir = args.save_dir
+    test_id = args.test_id
+    num_add = args.num_add
+
+    print("num_add =", num_add)
+
     YamlIncludeConstructor.add_to_loader_class(loader_class=yaml.FullLoader)
     config = yaml.load(open(config),Loader=yaml.FullLoader)
-    run(config, ckpt, data_list_file, save_dir, test_id)
+    run(config, ckpt, data_list_file, save_dir, test_id, num_add)
 
-# 2961-961-0008 BUT THE MEMORY OF THEIR EXPLOITS HAS PASSED AWAY OWING TO THE LAPSE OF TIME AND THE EXTINCTION OF THE ACTORS
-#              NOR IS THERE ANY REASON FOR CONSIDERING THE MEMORY FUNCTION AS A PARTICULARLY HIGH OR DIFFICULT PSYCHIC PERFORMANCE IN FACT THE CONTRARY IS TRUE AND YOU CAN FIND A GOOD MEMORY IN PERSONS WHO STAND VERY LOW INTELLECTUALLY

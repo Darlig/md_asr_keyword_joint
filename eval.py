@@ -22,6 +22,8 @@ from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_prec
 FBANK_EXTRACTOR = kaldi.fbank
 PATTERN = re.compile('^.*?LibriSpeech/')
 l2arctic_prior = 0.1377
+target_precisions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
 
 def compute_dcf(y_true, y_scores, save_dir, test_id, cost_miss=1.0, cost_fa=1.0, prior_target=0.5):
     assert cost_miss > 0 and cost_miss <= 1
@@ -146,8 +148,6 @@ def _precision_at_recall(precision, recall, r, mode="max"):
 
 
 def plot_result(hyp, ground_truth, save_dir, test_id):
-    target_precisions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-    #target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     mode = 'max'
     hyp_np = hyp.numpy()
     ground_truth_np = ground_truth.numpy()
@@ -186,27 +186,21 @@ def plot_result(hyp, ground_truth, save_dir, test_id):
     with open(os.path.join(save_dir, f"roc_pr_{test_id}.txt"), 'w') as f_roc:
         f_roc.write(f"ROC AUC: {roc_auc}\n")
         f_roc.write(f"PR AUC: {pr_auc}\n")
+        if target_recalls is not None:
+            for r in target_recalls:
+               matched_p, matched_r, matched_f1 = _precision_at_recall(precision, recall, r, mode=mode)
+               if matched_p is not None:
+                   print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
+                   f_roc.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
+               else:
+                   print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
+                   f_roc.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
         if target_precisions is not None:
-            if isinstance(target_precisions, (float, int)):
-                target_precisions = [float(target_precisions)]
-            pr_points = []
-            #for r in target_recalls:
-            #    matched_p, matched_r, matched_f1 = _precision_at_recall(precision, recall, r, mode=mode)
-            #    if matched_p is not None:
-            #        pr_points.append((r, matched_p))
-            #        print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
-            #        f_roc.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
-            #        #f_roc.write(f"precision@recall={r:.4f} ({mode}): {p:.4f}\n")
-            #    else:
-            #        print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
-            #        f_roc.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
             for p in target_precisions:
                 matched_r, matched_p, matched_f1 = _recall_at_precision(precision, recall, p, mode=mode)
                 if matched_r is not None:
-                    #pr_points.append((r, matched_p))
                     print(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
                     f_roc.write(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
-                    #f_roc.write(f"precision@recall={r:.4f} ({mode}): {p:.4f}\n")
                 else:
                     print(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)")
                     f_roc.write(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)\n")

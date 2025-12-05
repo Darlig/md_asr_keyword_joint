@@ -560,13 +560,14 @@ def inject_special_token(
 
     if (TEXT_SPEC_TOKEN['with_trans']) and (positive): # modify keyword in label
         new_phn_label[keyword_pos: keyword_pos+keyword_length] = new_keyword
-        if bpe_label:
-            bpe_kw_head = bpe_candidate[keyword_pos]
-            bpe_kw_tail = bpe_candidate[keyword_pos+keyword_length]
-            bpe_kw = bpe_label[bpe_kw_head: bpe_kw_tail] # keyword in bpe label
-            bpe_kw.insert(0, [TEXT_SPEC_TOKEN['sok']])
-            bpe_kw.insert(len(bpe_kw), [TEXT_SPEC_TOKEN['eok']])
-            new_bpe_label[bpe_kw_head: bpe_kw_tail] = bpe_kw
+        #if bpe_label:
+        #    assert keyword_pos+keyword_length < len(bpe_candidate), f"keyword_pos({keyword_pos}) + keyword_length({keyword_length}) must < len(bpe_candidate)({len(bpe_candidate)}), keyword: {keyword}"
+        #    bpe_kw_head = bpe_candidate[keyword_pos]
+        #    bpe_kw_tail = bpe_candidate[keyword_pos+keyword_length]
+        #    bpe_kw = bpe_label[bpe_kw_head: bpe_kw_tail] # keyword in bpe label
+        #    bpe_kw.insert(0, [TEXT_SPEC_TOKEN['sok']])
+        #    bpe_kw.insert(len(bpe_kw), [TEXT_SPEC_TOKEN['eok']])
+        #    new_bpe_label[bpe_kw_head: bpe_kw_tail] = bpe_kw
         new_keyword = new_keyword[1:-1] 
         new_keyword = unfold_list(new_keyword)
         new_keyword_idx = [i for i in range(len(new_keyword))]
@@ -575,6 +576,7 @@ def inject_special_token(
         if len(new_keyword_idx)> 5:
             sub_idx = random.randint(1, len(new_keyword_idx)//2)
             #sub_idx = random.randint(1, len(new_keyword_idx)//3)
+        assert sub_idx <= len(new_keyword_idx), f"sub_idx({sub_idx}) must <= len(new_keyword_idx)({len(new_keyword_idx)}), keyword: {keyword}"
         sub_idx = random.sample(new_keyword_idx, k=sub_idx)
         dice = random.uniform(0,1)
         if dice > 0.1:
@@ -655,6 +657,8 @@ def make_keyword_dump(sample, positive_prob, neg_len=None):
 # sample positive keyword from asr label
 def sample_kw_from_label(label: List, kw_candidate: List=None, max_keyword_len: int=6)->Tuple[List, int]:
     kw_len = random.randint(4, max_keyword_len)
+    if len(label) == 1:
+        return (label, 0)
     if kw_candidate: #TODO: a little bit confuse ...  optim it latter
         kw_len = kw_len if kw_len < len(kw_candidate) else 1
         kw_pos_idx = random.randint(0, len(kw_candidate)-kw_len-1) if len(kw_candidate) > kw_len+1 else 0
@@ -665,6 +669,7 @@ def sample_kw_from_label(label: List, kw_candidate: List=None, max_keyword_len: 
     else:
         kw_pos = random.randint(0, len(label)-kw_len) if len(label) > kw_len else 0
     kw = label[kw_pos: kw_pos + kw_len]
+    assert kw_len > 0, f"kw_len({kw_len}) must > 0, label: {label}, kw_candidate: {kw_candidate}, max_keyword_len: {max_keyword_len}"
     return (kw, kw_pos)
 
 # sample negative keyword from the whole corpus

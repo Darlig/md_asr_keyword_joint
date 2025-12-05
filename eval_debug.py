@@ -128,10 +128,13 @@ def extract_fbank(wav_path, config):
 
 def run(config, ckpt, data_list_file, save_dir, test_id):
     
+    print("create output dir if not exist")
     os.makedirs(save_dir, exist_ok=True)
+    print("read parameter from checkpoint")
     ckpt = torch.load(ckpt, map_location='cpu')
     model_state_dict = ckpt['model']
 
+    print("get config")
     data_config = config['data_config']
     fbank_config = data_config['sph_config']['feats_config']
     #data_list_file = 'md_data_list/datalist.test.l2arctic.txt'
@@ -139,17 +142,21 @@ def run(config, ckpt, data_list_file, save_dir, test_id):
     #data_list_file = 'test.datalist.phn'
     #data_list_file = 'l2.test.datalist'
     model_config = config['model_config']
+    print("init model")
     model = TransformerKWSPhone(**model_config)
+    print("load parameter from checkpoint")
     model.load_state_dict(model_state_dict)
     model.eval()
     
     
+    print("load data from datalist")
     tr_list = read_list(data_list_file, split_cv=False, shuffle=True)
 
     hyp = torch.tensor([])
     gd = torch.tensor([])
     e = 0
     t = 0
+    print("process each sample using loop")
     for i, one_test_obj in enumerate(tr_list):
         if i % 100 == 0:
             print(f"Processing {i}th sample")
@@ -159,7 +166,7 @@ def run(config, ckpt, data_list_file, save_dir, test_id):
         phn_label = one_test_obj['phn_label']
         md_label = one_test_obj.get('md_label', None)
         negative_candidate = one_test_obj.get('negative_candidate', None)
-        #assert negative_candidate != None
+        assert negative_candidate != None
         #md_label = torch.tensor(md_label)
         #md_label = md_label.view(1,-1)
         #phn_label = unfold_list(phn_label)

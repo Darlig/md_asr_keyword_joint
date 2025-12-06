@@ -23,8 +23,16 @@ import csv
 FBANK_EXTRACTOR = kaldi.fbank
 PATTERN = re.compile('^.*?LibriSpeech/')
 l2arctic_prior = 0.1377
-target_precisions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
-target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+target_precisions = [0.5]
+#target_precisions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+target_recalls = [0.5]
+#target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+
+CORR = 0
+SUB_NORMAL = -1
+SUB_UNK = -2
+SUB_DEVI = -3
+DEL = -4
 
 def compute_dcf(y_true, y_scores, save_dir, test_id, cost_miss=1.0, cost_fa=1.0, prior_target=0.5):
     assert cost_miss > 0 and cost_miss <= 1
@@ -81,7 +89,7 @@ def compute_dcf(y_true, y_scores, save_dir, test_id, cost_miss=1.0, cost_fa=1.0,
         f_dcf.write("DCF precision: {0}\n".format(dcf_precision))
         f_dcf.write("DCF F1: {0}\n".format(dcf_f1))
 
-def _recall_at_precision(precision, recall, p, mode="max"):
+def _recall_at_precision(precision, recall, thresholds, p, mode="max"):
     """Return (best_recall, matched_precision, f1) at/above target precision p.
 
     - mode="max": 在 precision >= p 的点集中，找 recall 最大的点；若有并列，取 precision 最小者。
@@ -90,6 +98,7 @@ def _recall_at_precision(precision, recall, p, mode="max"):
     p = float(np.clip(p, 0.0, 1.0))
     precision = np.asarray(precision, dtype=float)
     recall = np.asarray(recall, dtype=float)
+    thresholds = np.asarray(thresholds, dtype=float)
 
     if mode == "interp":
         order = np.argsort(precision)
@@ -114,10 +123,18 @@ def _recall_at_precision(precision, recall, p, mode="max"):
 
     best_r = float(recall[best_idx])
     best_p = float(precision[best_idx])
-    f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
-    return best_r, best_p, f1
+    
+    # threshold 对应关系：i → thresholds[i-1]
+    if best_idx == 0:
+        best_threshold = None
+    else:
+        best_threshold = float(thresholds[best_idx - 1])
 
-def _precision_at_recall(precision, recall, r, mode="max"):
+    f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
+    return best_r, best_p, f1, best_threshold
+
+#def _precision_at_recall_thresh(precision, recall, thresholds, r, mode="max"):
+def _precision_at_recall(precision, recall, thresholds, r, mode="max"):
     """Return (best_precision, matched_recall, f1) at/above target recall r.
 
     - mode="max": 在 recall >= r 的点集中，找 precision 最大的点；若有并列，取 recall 最大者。
@@ -127,6 +144,7 @@ def _precision_at_recall(precision, recall, r, mode="max"):
     r = float(np.clip(r, 0.0, 1.0))
     precision = np.asarray(precision, dtype=float)
     recall = np.asarray(recall, dtype=float)
+    thresholds = np.asarray(thresholds, dtype=float)
 
     if mode == "interp":
         order = np.argsort(recall)
@@ -151,11 +169,50 @@ def _precision_at_recall(precision, recall, r, mode="max"):
 
     best_p = float(precision[best_idx])
     best_r = float(recall[best_idx])
+
+    # threshold 对应关系：i → thresholds[i-1]
+    if best_idx == 0:
+        best_threshold = None
+    else:
+        best_threshold = float(thresholds[best_idx - 1])
+
     f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
-    return best_p, best_r, f1
+    return best_p, best_r, f1, best_threshold
+
+def compute_subset_pr(hyp, ground_truth, types, threshold, f_roc_txt):
+    pred = (hyp >= threshold).long()
+    
+    TN = ((pred == 0) & (ground_truth == 0)).sum().item()
+    FP = ((pred == 1) & (ground_truth == 0)).sum().item()
+    TP_del = ((pred == 1) & (types == DEL)).sum().item()
+    FN_del = ((pred == 0) & (types == DEL)).sum().item()
+    TP_sub = ((pred == 1) & ((types == SUB_NORMAL) | (types == SUB_DEVI) | (types == SUB_UNK))).sum().item()
+    FN_sub = ((pred == 0) & ((types == SUB_NORMAL) | (types == SUB_DEVI) | (types == SUB_UNK))).sum().item()
+
+    precision_all = (TP_del + TP_sub) / (TP_del + TP_sub + FP + 1e-12)
+    recall_all = (TP_del + TP_sub) / (TP_del + TP_sub + FN_del + FN_sub + 1e-12)
+    precision_del = TP_del / (TP_del + FP + 1e-12)
+    recall_del = TP_del / (TP_del + FN_del + 1e-12)
+    precision_sub = TP_sub / (TP_sub + FP + 1e-12)
+    recall_sub = TP_sub / (TP_sub + FN_sub + 1e-12)
+
+    print(f"@threshold={threshold:.6f}: \n \
+    TN={TN}, FP={FP}, TP_del={TP_del}, FN_del={FN_del}, TP_sub={TP_sub}, FN_sub={FN_sub}\n \
+    precision_all={precision_all:.4f}, recall_all={recall_all:.4f}, precision_del={precision_del:.4f}, recall_del={recall_del:.4f}, FN_del/(TP_del+FN_del)={FN_del/(TP_del+FN_del):.4f}, precision_sub={precision_sub:.4f}, recall_sub={recall_sub:.4f}, FN_sub/(TP_sub+FN_sub)={FN_sub/(TP_sub+FN_sub):.4f}\n")
+
+    f_roc_txt.write(f"@threshold={threshold:.6f}: \n  \
+    TN={TN}, FP={FP}, TP_del={TP_del}, FN_del={FN_del}, TP_sub={TP_sub}, FN_sub={FN_sub}\n \
+    precision_all={precision_all:.4f}, recall_all={recall_all:.4f}, precision_del={precision_del:.4f}, recall_del={recall_del:.4f}, FN_del/(TP_del+FN_del)={FN_del/(TP_del+FN_del):.4f}, precision_sub={precision_sub:.4f}, recall_sub={recall_sub:.4f}, FN_sub/(TP_sub+FN_sub)={FN_sub/(TP_sub+FN_sub):.4f}\n")
+
+    line_dict = {
+        "threshold": threshold,
+        "TN": TN, "FP": FP, "TP_del": TP_del, "FN_del": FN_del, "TP_sub": TP_sub, "FN_sub": FN_sub,
+        "precision_all": precision_all, "recall_all": recall_all, "precision_del": precision_del, "recall_del": recall_del, "FNR_del": FN_del/(TP_del+FN_del), "precision_sub": precision_sub, "recall_sub": recall_sub, "FNR_sub": FN_sub/(TP_sub+FN_sub)
+    }
+    return line_dict
 
 
-def plot_result(hyp, ground_truth, save_dir, test_id):
+def plot_result(hyp, ground_truth, save_dir, test_id, types=None):
     mode = 'max'
     # accept torch tensors or numpy arrays
     hyp_np = hyp.numpy() if hasattr(hyp, 'numpy') else np.asarray(hyp)
@@ -192,27 +249,39 @@ def plot_result(hyp, ground_truth, save_dir, test_id):
     plt.savefig(os.path.join(save_dir, f"roc_pr_{test_id}.png"), dpi=300)
     print(f"ROC AUC: {roc_auc}")
     print(f"PR AUC: {pr_auc}")
-    with open(os.path.join(save_dir, f"roc_pr_{test_id}.txt"), 'w') as f_roc:
-        f_roc.write(f"ROC AUC: {roc_auc}\n")
-        f_roc.write(f"PR AUC: {pr_auc}\n")
+    with open(os.path.join(save_dir, f"roc_pr_{test_id}.txt"), 'w') as f_roc_txt, open(os.path.join(save_dir, f"roc_pr_{test_id}.jsonl"), 'w') as f_roc_jsonl:
+        f_roc_txt.write(f"ROC AUC: {roc_auc}\n")
+        f_roc_txt.write(f"PR AUC: {pr_auc}\n")
+        f_roc_jsonl.write(f'{json.dumps({"ROC_AUC": roc_auc})}\n')
+        f_roc_jsonl.write(f'{json.dumps({"PR_AUC": pr_auc})}\n')
         if target_recalls is not None:
             for r in target_recalls:
-               matched_p, matched_r, matched_f1 = _precision_at_recall(precision, recall, r, mode=mode)
-               if matched_p is not None:
-                   print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
-                   f_roc.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
-               else:
-                   print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
-                   f_roc.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
+                matched_p, matched_r, matched_f1, matched_thresh = _precision_at_recall(precision, recall, pr_thresholds, r, mode=mode)
+                if (matched_p is not None) and (matched_thresh is not None):
+                    print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f}, threshold={matched_thresh:.6f} ({mode})")
+                    f_roc_txt.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f}, threshold={matched_thresh:.6f} ({mode})\n")
+                    roc_result_dict = {"target_recall": r, "precision": matched_p, "recall": matched_r, "f1_score": matched_f1, "threshold": matched_thresh}
+                    if types != None:
+                        subset_pr_dict = compute_subset_pr(hyp, ground_truth, types, matched_thresh, f_roc_txt)
+                        roc_result_dict.update(subset_pr_dict)
+                    f_roc_jsonl.write(f"{json.dumps(roc_result_dict)}\n")
+                else:
+                    print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
+                    f_roc_txt.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
         if target_precisions is not None:
             for p in target_precisions:
-                matched_r, matched_p, matched_f1 = _recall_at_precision(precision, recall, p, mode=mode)
-                if matched_r is not None:
-                    print(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
-                    f_roc.write(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
+                matched_r, matched_p, matched_f1, matched_thresh = _recall_at_precision(precision, recall, pr_thresholds, p, mode=mode)
+                if (matched_r is not None) and (matched_thresh is not None):
+                    print(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f}, threshold={matched_thresh:.6f} ({mode})")
+                    f_roc_txt.write(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f}, threshold={matched_thresh:.6f} ({mode})\n")
+                    roc_result_dict = {"target_precision": p, "precision": matched_p, "recall": matched_r, "f1_score": matched_f1, "threshold": matched_thresh}
+                    if types != None:
+                        subset_pr_dict = compute_subset_pr(hyp, ground_truth, types, matched_thresh, f_roc_txt)
+                        roc_result_dict.update(subset_pr_dict)
+                    f_roc_jsonl.write(f"{json.dumps(roc_result_dict)}\n")
                 else:
                     print(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)")
-                    f_roc.write(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)\n")
+                    f_roc_txt.write(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)\n")
 
 def plot_distribution(hyp, ground_truth, save_dir, test_id):
     hyp_np = hyp.numpy() if hasattr(hyp, 'numpy') else np.asarray(hyp)
@@ -349,7 +418,7 @@ def negative_data_aug(keyword, pos, negative_candidate=None):
     
     return keyword, md_label
 
-def sample_keyword(phn_label, md_label=None, negative_candidate=None, n_word=2):
+def sample_keyword(phn_label, md_label=None, error_type=None, negative_candidate=None, n_word=2):
 
     phn_len = len(phn_label)
     pos = phn_len // 2
@@ -359,6 +428,9 @@ def sample_keyword(phn_label, md_label=None, negative_candidate=None, n_word=2):
         #print("given md test set")
         md_label = md_label[pos:pos+n_word]
         md_label = unfold_list(md_label)
+        error_type = error_type[pos:pos+n_word]
+        #error_type = unfold_list(error_type)
+        error_type = [ t for et in error_type for t in et ]
     else:
         keyword, md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
     keyword = unfold_list(keyword)
@@ -366,15 +438,17 @@ def sample_keyword(phn_label, md_label=None, negative_candidate=None, n_word=2):
     keyword_len = torch.tensor([len(keyword)])
     keyword = torch.tensor(keyword, dtype=torch.long)
     md_label = torch.tensor(md_label, dtype=torch.float)
+    error_type = torch.tensor(error_type, dtype=torch.long)
     phn_label = torch.tensor(phn_label, dtype=torch.long)
-    return keyword.view(1, -1), keyword_len, md_label.view(1, -1), phn_label.view(1, -1)
+    return keyword.view(1, -1), keyword_len, md_label.view(1, -1), error_type.view(1, -1), phn_label.view(1, -1)
 
-def sample_all_keywords(phn_label, md_label=None, negative_candidate=None, n_word=2):
+def sample_all_keywords(phn_label, md_label=None, error_type=None, negative_candidate=None, n_word=2):
 
     phn_len = len(phn_label)
     keywords = []
     keyword_lens = []
     md_labels = []
+    error_types = []
     for pos in range(0, phn_len, n_word):
         if pos + 2*n_word >= phn_len:
             keyword = phn_label[pos:phn_len]
@@ -382,6 +456,8 @@ def sample_all_keywords(phn_label, md_label=None, negative_candidate=None, n_wor
                 #print("given md test set")
                 kw_md_label = md_label[pos:phn_len]
                 kw_md_label = unfold_list(kw_md_label)
+                kw_error_type = error_type[pos:phn_len]
+                kw_error_type = [ t for et in kw_error_type for t in et ]
             else:
                 keyword, kw_md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
             keyword = unfold_list(keyword)
@@ -392,6 +468,8 @@ def sample_all_keywords(phn_label, md_label=None, negative_candidate=None, n_wor
             keywords.append(keyword.view(1, -1))
             keyword_lens.append(keyword_len)
             md_labels.append(kw_md_label.view(1, -1))
+            kw_error_type = torch.tensor(kw_error_type, dtype=torch.long)
+            error_types.append(kw_error_type)
             break
         else:
             keyword = phn_label[pos:pos+n_word]
@@ -399,6 +477,8 @@ def sample_all_keywords(phn_label, md_label=None, negative_candidate=None, n_wor
                 #print("given md test set")
                 kw_md_label = md_label[pos:pos+n_word]
                 kw_md_label = unfold_list(kw_md_label)
+                kw_error_type = error_type[pos:pos+n_word]
+                kw_error_type = [ t for et in kw_error_type for t in et ]
             else:
                 keyword, kw_md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
             keyword = unfold_list(keyword)
@@ -409,10 +489,13 @@ def sample_all_keywords(phn_label, md_label=None, negative_candidate=None, n_wor
             keywords.append(keyword.view(1, -1))
             keyword_lens.append(keyword_len)
             md_labels.append(kw_md_label.view(1, -1))
+            #print(f"error_type: {error_type}")
+            kw_error_type = torch.tensor(kw_error_type, dtype=torch.long)
+            error_types.append(kw_error_type)
     phn_label = unfold_list(phn_label)
     phn_label = torch.tensor(phn_label, dtype=torch.long)
     
-    return keywords, keyword_lens, md_labels, phn_label.view(1, -1)
+    return keywords, keyword_lens, md_labels, error_types, phn_label.view(1, -1)
 
 def extract_fbank(wav_path, config):
     wav, sr = torchaudio.load(wav_path)
@@ -471,6 +554,7 @@ def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_p
 
     hyp = torch.tensor([])
     gd = torch.tensor([])
+    types = torch.tensor([])
     e = 0
     t = 0
     for i, one_test_obj in enumerate(tr_list):
@@ -481,6 +565,7 @@ def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_p
         #wav_path = PATTERN.sub('', one_test_obj['sph'])
         phn_label = one_test_obj['phn_label']
         md_label = one_test_obj.get('md_label', None)
+        error_type = one_test_obj.get('md_err_type', None)
         negative_candidate = one_test_obj.get('negative_candidate', None)
         #assert negative_candidate != None
         #md_label = torch.tensor(md_label)
@@ -492,12 +577,14 @@ def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_p
         #phn_label = torch.tensor([phn_label])
         #aug_keyword = aug_keyword.view(1,-1)
         fbank_feats, fbank_len = extract_fbank(wav_path, fbank_config)        
-        aug_keywords, aug_keyword_lens, aug_md_labels, phn_label = sample_all_keywords(phn_label, md_label, negative_candidate, n_word=4)
-        #aug_keyword, aug_keyword_len, md_label, phn_label = sample_keyword(phn_label, md_label, negative_candidate)
+        aug_keywords, aug_keyword_lens, aug_md_labels, aug_error_types, phn_label = sample_all_keywords(phn_label, md_label, error_type, negative_candidate, n_word=4)
+        #aug_keyword, aug_keyword_len, md_label, error_type, phn_label = sample_keyword(phn_label, md_label, error_type, negative_candidate)
+        #print(f"aug_error_types: {type(aug_error_types}")
         for i in range(len(aug_keywords)):
             aug_keyword = aug_keywords[i]
             aug_keyword_len = aug_keyword_lens[i]
             aug_md_label = aug_md_labels[i]
+            aug_error_type = aug_error_types[i]
             #print(f"aug_keyword shape: {aug_keyword.shape}, aug_keyword_len shape: {aug_keyword_len.shape}, md_label shape: {md_label.shape}, phn_label shape: {phn_label.shape}")
             #print(f"aug_keyword: {aug_keyword}, aug_keyword_len: {aug_keyword_len}")
             #print(f"md_label: {md_label}")
@@ -507,6 +594,8 @@ def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_p
             det_result = det_result.view(-1)
             hyp = torch.cat([hyp, det_result], dim=-1)
             gd = torch.cat([gd, aug_md_label.view(-1)], dim=-1)
+            #print(f"aug_error_type: {type(aug_error_type)}")
+            types = torch.cat([types, aug_error_type.view(-1)], dim=-1)
             asr_result = remove_duplicates_and_blank(asr_result.view(-1))
             one_error, one_total, one_cer = compute_cer(asr_result, phn_label.view(-1), detail=True)
             e += one_error
@@ -520,11 +609,66 @@ def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_p
     # save results
     save_results(hyp, gd, save_dir, test_id)
 
-    plot_result(hyp, gd, save_dir, test_id)
-    plot_distribution(hyp, gd, save_dir, test_id)
+    print(f"number of unknown substitute: {hyp[types == SUB_UNK].shape}")
+    print(f"number of deviation substitute: {hyp[types == SUB_DEVI].shape}")
+    print(f"number of normal substitute: {hyp[types == SUB_NORMAL].shape}")
+    print(f"number of delete: {hyp[types == DEL].shape}")
+     
+    print("only substitute")
+    hyp_sub = hyp[types != DEL]
+    gd_sub = gd[types != DEL]
+    plot_result(hyp_sub, gd_sub, save_dir, f"{test_id}_sub") 
+    plot_distribution(hyp_sub, gd_sub, save_dir, f"{test_id}_sub") 
+    compute_dcf(gd_sub, hyp_sub, save_dir, f"{test_id}_sub")
+   
+    #print("perfect on delete") # count substitute and delete, make predict value of delete equal to groundtruth
+    #hyp_dream = hyp.clone()
+    #hyp_dream1 = hyp_dream[(types == DEL) & (gd == 1)]
+    #hyp_dream2 = hyp_dream[(types == DEL)]
+    #hyp_dream3 = hyp_dream[(types == '999')]
+    #print(f"hyp_dream1 shape: {hyp_dream1.shape}")
+    #print(f"hyp_dream2 shape: {hyp_dream2.shape}")
+    #print(f"hyp_dream3 shape: {hyp_dream3.shape}")
+    #print(f"hyp_dream shape: {hyp_dream.shape}")
+    #hyp_dream[(types == DEL) & (gd == 1)] = 1
+    #plot_result(hyp_dream, gd, save_dir, f"{test_id}_dream_del") 
+    #plot_distribution(hyp_dream, gd, save_dir, f"{test_id}_dream_del") 
+    #compute_dcf(gd_sub, hyp_sub, save_dir, f"{test_id}_dream_del")
+
+    #print("only delete")
+    #hyp_del = hyp[(types != SUB_NORMAL) & (types != SUB_UNK) & (types != SUB_DEVI)]
+    #gd_del = gd[(types != SUB_NORMAL) & (types != SUB_UNK) & (types != SUB_DEVI)]
+    #plot_result(hyp_del, gd_del, save_dir, f"{test_id}_del") 
+    #plot_distribution(hyp_del, gd_del, save_dir, f"{test_id}_del") 
+    #compute_dcf(gd_del, hyp_del, save_dir, f"{test_id}_del")
+
+    #print("only normal substitute (no unknown, no deviation)")
+    #hyp_sub_normal = hyp[(types != DEL) & (types != SUB_UNK) & (types != SUB_DEVI)]
+    #gd_sub_normal = gd[(types != DEL) & (types != SUB_UNK) & (types != SUB_DEVI)]
+    #plot_result(hyp_sub_normal, gd_sub_normal, save_dir, f"{test_id}_sub_normal") 
+    #plot_distribution(hyp_sub_normal, gd_sub_normal, save_dir, f"{test_id}_sub_normal") 
+    #compute_dcf(gd_sub_normal, hyp_sub_normal, save_dir, f"{test_id}_sub_normal")
+   
+    #print("only unknown substitute (no normal, no deviation)")
+    #hyp_sub_unk = hyp[(types != DEL) & (types != SUB_NORMAL) & (types != SUB_DEVI)]
+    #gd_sub_unk = gd[(types != DEL) & (types != SUB_NORMAL) & (types != SUB_DEVI)]
+    #plot_result(hyp_sub_unk, gd_sub_unk, save_dir, f"{test_id}_sub_unk") 
+    #plot_distribution(hyp_sub_unk, gd_sub_unk, save_dir, f"{test_id}_sub_unk") 
+    #compute_dcf(gd_sub_unk, hyp_sub_unk, save_dir, f"{test_id}_sub_unk")
+   
+    #print("only deviation substitute (no unknown, no normal)")
+    #hyp_sub_devi = hyp[(types != DEL) & (types != SUB_UNK) & (types != SUB_NORMAL)]
+    #gd_sub_devi = gd[(types != DEL) & (types != SUB_UNK) & (types != SUB_NORMAL)]
+    #plot_result(hyp_sub_devi, gd_sub_devi, save_dir, f"{test_id}_sub_devi") 
+    #plot_distribution(hyp_sub_devi, gd_sub_devi, save_dir, f"{test_id}_sub_devi") 
+    #compute_dcf(gd_sub_devi, hyp_sub_devi, save_dir, f"{test_id}_sub_devi")
+    
+    print("all phone samples, analysis subset")
+    plot_result(hyp, gd, save_dir, f"{test_id}_types", types=types) 
+    plot_distribution(hyp, gd, save_dir, test_id) 
     #compute_dcf(gd, hyp, save_dir, test_id, prior_target=0.5)
-    compute_dcf(gd, hyp, save_dir, test_id, prior_target=l2arctic_prior)
-    #compute_dcf(gd, hyp, save_dir, test_id)
+    #compute_dcf(gd, hyp, save_dir, test_id, prior_target=l2arctic_prior)
+    compute_dcf(gd, hyp, save_dir, test_id)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

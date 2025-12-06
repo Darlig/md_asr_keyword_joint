@@ -575,6 +575,7 @@ def inject_special_token(
         if len(new_keyword_idx)> 5:
             sub_idx = random.randint(1, len(new_keyword_idx)//2)
             #sub_idx = random.randint(1, len(new_keyword_idx)//3)
+        assert sub_idx <= len(new_keyword_idx), f"sub_idx({sub_idx}) must <= len(new_keyword_idx)({len(new_keyword_idx)}), keyword: {keyword}, new_keyword: {new_keyword}, new_keyword_idx: {new_keyword_idx}"
         sub_idx = random.sample(new_keyword_idx, k=sub_idx)
         dice = random.uniform(0,1)
         if dice > 0.1:
@@ -587,7 +588,7 @@ def inject_special_token(
                     elif current_phn in phonetic_auxiliary['consonant']:
                         sub_phn = random.choice([x for x in phonetic_auxiliary['consonant'] if x != current_phn])
                     else:
-                        sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
+                        sub_phn = random.choice([x for x in range(1, 41) if x != current_phn])
                     new_keyword[i] = sub_phn
                     md_label[i] = 1
     if not positive:
@@ -628,6 +629,8 @@ def make_keyword(
         keyword_pos = -1
         pos = False
         target = torch.tensor([0])
+    assert keyword != [], f"keyword must not be [], candidate_seq: {candidate_seq}, positive_prob: {positive_prob}"
+    assert keyword != [[]], f"keyword must not be [[]], candidate_seq: {candidate_seq}, positive_prob: {positive_prob}"
     return (keyword, keyword_pos, len(keyword), pos, target)
 
         
@@ -665,6 +668,7 @@ def sample_kw_from_label(label: List, kw_candidate: List=None, max_keyword_len: 
     else:
         kw_pos = random.randint(0, len(label)-kw_len) if len(label) > kw_len else 0
     kw = label[kw_pos: kw_pos + kw_len]
+    assert kw_len > 0, f"kw_len({kw_len}) must > 0, label: {label}, kw_candidate: {kw_candidate}, max_keyword_len: {max_keyword_len}"
     return (kw, kw_pos)
 
 # sample negative keyword from the whole corpus

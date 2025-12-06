@@ -50,12 +50,12 @@ model_config:
 # experimental config
 exp_config:
   trained_ckpt: ""
-  exp_dir: exp/md_timit_all_w_spn_double_cross_attention_pos0.1_word0.5_vow_con
+  exp_dir: exp/md_timit_all_w_spn_double_cross_attention_pos0.1_word0.5_vow_con_lr_5e-5
   #exp_dir: exp/md_10k_data_double_cross_attention
   warm_up_peak_epoch: 10
   exp_name: kwatt_asr
   optim_config:
-    lr: 0.0001
+    lr: 0.00005
   log_config:
     level: "INFO"
     filemode: "a"

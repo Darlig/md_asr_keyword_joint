@@ -1,0 +1,97 @@
+# model archive
+model_arch: TransformerKWSPhone
+
+# model config
+model_config:
+  audio_net_config:
+    input_trans: &linear_common
+      dim: [256, 256]
+      num_block: 1
+      norm: LayerNorm
+      act: ReLU
+    transformer_config: 
+      size: 256
+      self_att: MultiHeadAtt
+      self_att_config: &att_common
+        n_head: 4
+        n_feats: 256
+      cross_att: MultiHeadCrossAtt
+      corss_att_config: 
+        n_head: 1
+        n_feats: 256
+        norm: LayerNorm
+      feed_forward_config: &feed_forward_common
+        dim: [256, 512, 256]
+        num_block: 1
+        norm: LayerNorm
+        act: ReLU
+      conv_config:
+        channels: 256
+
+  kw_net_config:
+    #num_token: 31 # letter 1-26 special token ' and tow keyword pos_token 28, 29, 30 for unknown
+    num_phn_token: 44 # phone 1-70; blank 0; sos/eos 71/72
+    input_trans: 
+      dim: 256
+      num_block: 1
+      norm: LayerNorm
+      act: ReLU
+    transformer_config:
+      size: 256
+      self_att: MultiHeadAtt
+      self_att_config: *att_common
+      feed_forward_config: *feed_forward_common
+  num_audio_block: 6
+  num_kw_block: 4
+  sok: 1
+  eok: 2
+  loss_weight: [0.3, 0.1, 0.3]
+
+# experimental config
+exp_config:
+  trained_ckpt: ""
+  exp_dir: exp/md_timit_cmu_spn_double_cross_attention_pos0.1_word0.5_vow_con
+  #exp_dir: exp/md_10k_data_double_cross_attention
+  warm_up_peak_epoch: 10
+  exp_name: kwatt_asr
+  optim_config:
+    lr: 0.0001
+  log_config:
+    level: "INFO"
+    filemode: "a"
+    format:  "%(asctime)s: %(message)s"
+  log_interval: 5
+  valid_interval: 100
+
+# data config
+data_config: &base_data_config
+  epoch: 250
+  #start_epoch: 231
+  #start_epoch: 200
+  start_epoch: 0
+  #start_epoch: 87
+  shuffle: True
+  num_worker: 16
+  #num_worker: 4
+  #num_worker: 30
+  sph_config: !include config/base_config/self_corrupt_none_target_corrupt_spec_aug.yaml
+  keyword_config:
+    format: sample
+    config:
+      positive_prob: 1.0
+      special_token:
+        sok: 1
+        eok: 2
+        unk: 5276
+        psok: 41
+        peok: 42
+        punk: 43
+        with_trans: True
+      phonetic_auxiliary: phonetic_auxiliary_cmu_spn.json
+  length_key: mixspeech,speech,keyword
+  fetch_key: mixspeech,mixspeech_len,phn_label,phn_label_len,keyword,keyword_len,md_label,md_label_len,target
+  batch_size: 32
+  #batch_size: 128
+  data_list: md_data_list/datalist.all.timit_w_spn.train.txt
+  valid_list: md_data_list/datalist.all.timit_w_spn.valid.txt
+

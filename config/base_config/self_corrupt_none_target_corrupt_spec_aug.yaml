@@ -1,0 +1,34 @@
+data_type: raw
+feats_type: fbank
+feats_config: !include config/feats_config/fbank.yaml
+self_corruption:
+  num_corrupt: 1
+  prob: 0
+  sampler: uniform
+  sampler_config:
+    low: 0.4
+    high: 0.9
+#none_target_corruption: 
+#  corrupt_list: aishell_ke_data/noise.cutted.scp
+#  prob: 1
+#  num_corrupt: 1
+#  sampler: uniform
+#  sampler_config:
+#    low: 0.3
+#    high: 0.7
+#rirs:
+#  rirs_prob: 0.4
+#rirs_list: aishell_ke_data/remove_bad.scp
+wav_augment:
+  volume:
+    sampler: uniform
+    config:
+      low: 0.9
+      high: 1.1
+  speed_perturb:
+    factors: [0.9, 1.0, 1.1]
+spec_augment:
+  num_t_mask: 2
+  num_f_mask: 2
+  max_t: 20
+  max_f: 5

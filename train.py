@@ -83,12 +83,13 @@ class Trainer():
         self.exp_config = config_file['exp_config']
 
         # continue training from break point
-        if self.data_config['start_epoch'] != 0:
-            config_file = '{}/model.yaml'.format(self.exp_config['exp_dir'])
-            model_config = yaml.load(open(config_file), Loader=yaml.FullLoader)
-            self.model_config = model_config
-        else:
-            self.model_config = config_file['model_config']
+        # always load config from args
+	#if self.data_config['start_epoch'] != 0:
+        #    config_file = '{}/model.yaml'.format(self.exp_config['exp_dir'])
+        #    model_config = yaml.load(open(config_file), Loader=yaml.FullLoader)
+        #    self.model_config = model_config
+        #else:
+        self.model_config = config_file['model_config']
         self.model = model_arch(**self.model_config)
         self.rank = rank
         self.seed = random_seed
@@ -122,97 +123,50 @@ class Trainer():
             ef = open("{}/exp.yaml".format(self.exp_config['exp_dir']), 'w')
             yaml.dump(self.exp_config, ef)
 
-    def compute_redundancy(self, n, batch_size):
+    def compute_redundancy(self, n):
         r1 = n % self.world_size
-        r2 = ((n - r1) / self.world_size) % batch_size
+        r2 = ((n - r1) / self.world_size) % self.batch_size
         rt = n - r1 - r2 * self.world_size
         return int(rt)
 
     def make_data_loader(self):
-        multi = self.data_config.get('multi_datasets', False)
-        if multi:
-            tr_lists = {}
-            cv_lists = {}
-            datasets_list = []
-            for data_key, data_config in multi['datasets'].items():
-                # data_key = data_config['data_key']
-                # print(f"data_key: {data_key}")
-                # print(f"data_config: {data_config}")
-                # self.data_config['multi_datasets']['datasets'][data_key]['data_name'] = data_key
-                # self.data_config['multi_datasets']['datasets'][data_key]['data_key'] = data_key
-                datasets_list.append({
-                    'data_name': data_key,
-                    'datalist_key': data_key,
-                    'conf': data_config
-                })
-                data_list_file = data_config['data_list']
-                cv_list_file = data_config.get('valid_list', None)
+        # parse datalist
+        data_list_file = self.data_config['data_list']
+        self.batch_size = self.data_config['batch_size']
+        cv_list_file = self.data_config.get('valid_list', None)
 
-                if cv_list_file:
-                    cv_list = read_list(cv_list_file, split_cv=False, shuffle=True)
-                    tr_list = read_list(data_list_file, split_cv=False, shuffle=True)
-                else:
-                    tr_list, cv_list = read_list(data_list_file, split_cv=True, shuffle=True)
-                num_train_sample = len(tr_list)
-                num_valid_sample = len(cv_list)
-
-                rt_train_sampple = self.compute_redundancy(num_train_sample, data_config['batch_size'])
-                rt_cv_sample = self.compute_redundancy(num_valid_sample, data_config['batch_size'])
-
-                tr_lists[data_key] = tr_list[:rt_train_sampple]
-                cv_lists[data_key] = cv_list[:rt_cv_sample]
-            self.data_config['multi_datasets']['datasets'] = datasets_list
-            self.num_samples = sum([len(v) for k,v in tr_lists.items()])
-            print(f"num samples: {self.num_samples}")
-
-            self.tr_set = Dataset(
-                self.data_config,
-                tr_lists
-            )
-            self.cv_set = Dataset(
-                self.data_config,
-                cv_lists
-            )
-            
+        if cv_list_file:
+            cv_list = read_list(cv_list_file, split_cv=False, shuffle=True)
+            tr_list = read_list(data_list_file, split_cv=False, shuffle=True)
         else:
-            # parse datalist
-            data_list_file = self.data_config['data_list']
-            self.batch_size = self.data_config['batch_size']
-            cv_list_file = self.data_config.get('valid_list', None)
+            tr_list, cv_list = read_list(data_list_file, split_cv=True, shuffle=True)
+        num_train_sample = len(tr_list)
+        num_valid_sample = len(cv_list)
 
-            if cv_list_file:
-                cv_list = read_list(cv_list_file, split_cv=False, shuffle=True)
-                tr_list = read_list(data_list_file, split_cv=False, shuffle=True)
-            else:
-                tr_list, cv_list = read_list(data_list_file, split_cv=True, shuffle=True)
-            num_train_sample = len(tr_list)
-            num_valid_sample = len(cv_list)
+        rt_train_sampple = self.compute_redundancy(num_train_sample)
+        rt_cv_sample = self.compute_redundancy(num_valid_sample)
 
-            rt_train_sampple = self.compute_redundancy(num_train_sample, self.batch_size)
-            rt_cv_sample = self.compute_redundancy(num_valid_sample, self.batch_size)
+        tr_list = tr_list[:rt_train_sampple]
+        cv_list = cv_list[:rt_cv_sample]
 
-            tr_list = tr_list[:rt_train_sampple]
-            cv_list = cv_list[:rt_cv_sample]
-
-            if self.data_config.get('egs_format', False):
-                egs_path = os.path.dirname(data_list_file)
-                assert os.path.isfile("{}/train.samples".format(egs_path))
-                with open("{}/train.samples".format(egs_path),'r') as ef:
-                    self.num_samples = int(ef.readline().strip())
-            else:
-                self.num_samples = len(tr_list)
-            # num_worker = self.data_config.get('num_worker', 10)
-
-            self.tr_set = Dataset(
-                self.data_config,
-                tr_list,
-            )
-            self.cv_set = Dataset(
-                self.data_config,
-                cv_list,
-            )
-
+        if self.data_config.get('egs_format', False):
+            egs_path = os.path.dirname(data_list_file)
+            assert os.path.isfile("{}/train.samples".format(egs_path))
+            with open("{}/train.samples".format(egs_path),'r') as ef:
+                self.num_samples = int(ef.readline().strip())
+        else:
+            self.num_samples = len(tr_list)
         num_worker = self.data_config.get('num_worker', 10)
+
+        self.tr_set = Dataset(
+            self.data_config,
+            tr_list,
+        )
+        self.cv_set = Dataset(
+            self.data_config,
+            cv_list,
+        )
+
         self.tr_loader = DataLoader(
             self.tr_set,
             batch_size=None,
@@ -233,15 +187,10 @@ class Trainer():
             )
 
     def init_opt_model(self):
-        multi = self.data_config.get('multi_datasets', False)
-        if multi:
-            batch_size = multi['total_batch_size']
-        else:
-            batch_size = self.data_config['batch_size']
         # warm_up setting: compute update steps per epoch
-        # self.batch_size = self.data_config['batch_size']
+        self.batch_size = self.data_config['batch_size']
         world_size = self.world_size
-        steps_per_epoch = self.num_samples // (batch_size * world_size)
+        steps_per_epoch = self.num_samples // (self.batch_size * world_size)
         steps_per_epoch = 1 if steps_per_epoch == 0 else steps_per_epoch
         if self.exp_config.get('warm_up_peak_epoch', False):
             warm_up_peak_epoch = self.exp_config.get('warm_up_peak_epoch')

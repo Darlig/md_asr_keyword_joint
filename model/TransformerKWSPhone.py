@@ -321,7 +321,8 @@ class TransformerKWSPhone(nn.Module):
         det_loss = det_loss.sum(dim=-1).mean()
 
         # decoder output 
-        total_loss = (0.3 * phn_ctc_loss) + (0.6 * det_loss) 
+        total_loss = (self.l1 * phn_ctc_loss) + (self.l2 * det_loss) 
+        #total_loss = (0.3 * phn_ctc_loss) + (0.6 * det_loss) 
         detail_loss = {
             'phn_ctc_loss': phn_ctc_loss.clone().detach(),
             'det_loss': det_loss.clone().detach(),

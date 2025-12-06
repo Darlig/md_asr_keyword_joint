@@ -212,7 +212,7 @@ def process_speech_feats(data: Iterator[Dict], config: Dict[Any, Any]) -> Iterat
         # Spec Augment: time & freq mask
         if config.get('spec_augment', False):
             spec_augment_config = config.get('spec_augment')
-            feats = [utils.spec_augment(f, spec_augment_config) for f in feats]
+            feats = [utils.spec_augment(f, **spec_augment_config) for f in feats]
 
         # Splice Feature: add context
         if config.get('splice_config'):
@@ -419,7 +419,7 @@ def process_sampled_keyword_from_label(
         kw, new_phn_label, new_bpe_label, kw_pos, md_label = utils.inject_special_token(
             keyword=kw, keyword_length=kw_length, positive=pos, label=new_phn_label, 
             keyword_pos=kw_pos, special_token=special_token,  bpe_label=new_bpe_label, bpe_candidate=bpe_candidate,
-	    phonetic_auxiliary=phonetic_auxiliary
+            phonetic_auxiliary=phonetic_auxiliary
         )
 
         sample.update({'keyword': kw, 'phn_label': new_phn_label, 'bpe_label': new_bpe_label, 'target': target, 'md_label': md_label}) 

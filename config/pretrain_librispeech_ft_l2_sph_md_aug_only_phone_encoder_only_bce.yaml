@@ -86,6 +86,6 @@ data_config: &base_data_config
   length_key: mixspeech,speech,keyword
   fetch_key: mixspeech,mixspeech_len,phn_label,phn_label_len,keyword,keyword_len,md_label,md_label_len,target
   batch_size: 32
-  data_list: md_data_list/datalist.train.l2arctic_md_uni_sph_label.txt
-  valid_list: md_data_list/datalist.train.l2arctic_md_uni_sph_label.samp100.txt
+  data_list: md_data_list/datalist.train.l2arctic_sph_label.txt
+  valid_list: md_data_list/datalist.train.l2arctic_sph_label.samp100.txt
 

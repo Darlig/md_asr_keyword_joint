@@ -1,0 +1,41 @@
+#! /bin/bash
+
+
+pretrained_ckpt_dir=/work104/weiyang/project/maolidan_thesis/experiment/md_asr_keyword_joint/exp.dragon05/md_libri960_double_cross_attention_pos0.1_word0.5_vow_con/
+
+mkdir -p exp/md_librispeech_data_aug_ft_l2_train_md_only_phone_encoder_only_bce 
+cp ${pretrained_ckpt_dir}/kwatt_asr_49.pt exp/md_librispeech_data_aug_ft_l2_train_md_only_phone_encoder_only_bce/
+cp ${pretrained_ckpt_dir}/model.yaml exp/md_librispeech_data_aug_ft_l2_train_md_only_phone_encoder_only_bce/
+mkdir -p exp/md_librispeech_data_aug_ft_l2_train_md 
+cp ${pretrained_ckpt_dir}/kwatt_asr_49.pt exp/md_librispeech_data_aug_ft_l2_train_md/
+cp ${pretrained_ckpt_dir}/model.yaml exp/md_librispeech_data_aug_ft_l2_train_md/
+mkdir -p exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug_only_phone_encoder_only_bce 
+cp ${pretrained_ckpt_dir}/kwatt_asr_49.pt exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug_only_phone_encoder_only_bce/
+cp ${pretrained_ckpt_dir}/model.yaml exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug_only_phone_encoder_only_bce/
+mkdir -p exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug 
+cp ${pretrained_ckpt_dir}/kwatt_asr_49.pt exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug/
+cp ${pretrained_ckpt_dir}/model.yaml exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug/
+mkdir -p exp/md_librispeech_data_aug_ft_l2_train_sph_only_ctc_freeze_phone 
+cp ${pretrained_ckpt_dir}/kwatt_asr_49.pt exp/md_librispeech_data_aug_ft_l2_train_sph_only_ctc_freeze_phone/
+cp ${pretrained_ckpt_dir}/model.yaml exp/md_librispeech_data_aug_ft_l2_train_sph_only_ctc_freeze_phone/
+
+
+# fine-tune
+bash run_train_freeze_phone.sh --config config/pretrain_librispeech_ft_l2_sph_only_ctc_freeze_phone.yaml --GPU 0
+bash run_train_only_phone_encoder.sh --config config/pretrain_librispeech_ft_l2_sph_md_aug_only_phone_encoder_only_bce.yaml --GPU 0
+bash run_train.sh --config config/pretrain_librispeech_ft_l2_sph_md_aug.yaml --GPU 0
+bash run_train_only_phone_encoder.sh --config config/pretrain_librispeech_ft_l2_md_only_phone_encoder_only_bce.yaml --GPU 0
+bash run_train.sh --config config/pretrain_librispeech_ft_l2_md.yaml --GPU 0
+
+# test
+python avg_model_ckpt.py --ckpt exp/md_librispeech_data_aug_ft_l2_train_sph_only_ctc_freeze_phone/kwatt_asr_49.pt --min_epoch 80 --max_epoch 90
+python avg_model_ckpt.py --ckpt exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug_only_phone_encoder_only_bce/kwatt_asr_49.pt --min_epoch 80 --max_epoch 90
+python avg_model_ckpt.py --ckpt exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug/kwatt_asr_49.pt --min_epoch 80 --max_epoch 90
+python avg_model_ckpt.py --ckpt exp/md_librispeech_data_aug_ft_l2_train_md_only_phone_encoder_only_bce/kwatt_asr_49.pt --min_epoch 80 --max_epoch 90
+python avg_model_ckpt.py --ckpt exp/md_librispeech_data_aug_ft_l2_train_md/kwatt_asr_49.pt --min_epoch 80 --max_epoch 90
+
+python eval.py config/pretrain_librispeech_ft_l2_sph_only_ctc_freeze_phone.yaml config/pretrain_librispeech_ft_l2_md.yaml exp/md_librispeech_data_aug_ft_l2_train_sph_only_ctc_freeze_phone/kwatt_asr_avg_80-90.pt md_data_list/datalist.test.l2arctic.txt exp/md_librispeech_data_aug_ft_l2_train_sph_only_ctc_freeze_phone/result l2arctic
+python eval.py config/pretrain_librispeech_ft_l2_sph_md_aug_only_phone_encoder_only_bce.yaml config/pretrain_librispeech_ft_l2_md.yaml exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug_only_phone_encoder_only_bce/kwatt_asr_avg_80-90.pt md_data_list/datalist.test.l2arctic.txt exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug_only_phone_encoder_only_bce/result l2arctic
+python eval.py config/pretrain_librispeech_ft_l2_sph_md_aug.yaml config/pretrain_librispeech_ft_l2_md.yaml exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug/kwatt_asr_avg_80-90.pt md_data_list/datalist.test.l2arctic.txt exp/md_librispeech_data_aug_ft_l2_train_sph_md_aug/result l2arctic
+python eval.py config/pretrain_librispeech_ft_l2_md_only_phone_encoder_only_bce.yaml config/pretrain_librispeech_ft_l2_md.yaml exp/md_librispeech_data_aug_ft_l2_train_md_only_phone_encoder_only_bce/kwatt_asr_avg_80-90.pt md_data_list/datalist.test.l2arctic.txt exp/md_librispeech_data_aug_ft_l2_train_md_only_phone_encoder_only_bce/result l2arctic
+python eval.py config/pretrain_librispeech_ft_l2_md.yaml config/pretrain_librispeech_ft_l2_md.yaml exp/md_librispeech_data_aug_ft_l2_train_md/kwatt_asr_avg_80-90.pt md_data_list/datalist.test.l2arctic.txt exp/md_librispeech_data_aug_ft_l2_train_md/result l2arctic

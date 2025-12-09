@@ -2,7 +2,7 @@
 
 import sys
 import json
-
+import os
 
 source_human_json = sys.argv[1]
 wav_scp = sys.argv[2]
@@ -21,6 +21,7 @@ with open(phone2id) as f_phn2id:
         phn, phnid = line.strip().split()
         phn2id_dict[phn] = int(phnid)
 
+os.makedirs(os.path.dirname(output_datalist), exist_ok=True)
 with open(source_human_json) as f_json, open(output_datalist, 'w') as f_datalist:
     human_label_dict = json.load(f_json)
     for uttid, utt_human_label in human_label_dict.items():

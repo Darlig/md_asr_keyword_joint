@@ -29,4 +29,5 @@ if [ $stage -le 1 ];then
     } &
     sleep 5
     done
+    wait
 fi

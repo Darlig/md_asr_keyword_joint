@@ -1,13 +1,20 @@
+#! /bin/bash
 
 L2ARCTIC_ROOT=/work104/weiyang/data/L2-ARCTIC/
+LibriSpeech_lexicon=/work104/weiyang/data/LibriSpeech/resource/librispeech-lexicon.txt
+librispeech_wav_scp=/work104/weiyang/project/maolidan_thesis/experiment/text_enroll_md/resource/LibriSpeech/train_all_960/wav.scp
+librispeech_text=/work104/weiyang/project/maolidan_thesis/experiment/text_enroll_md/resource/LibriSpeech/train_all_960/text
 
-# librispeech
-python make_datalist_librispeech.py /work104/weiyang/project/maolidan_thesis/experiment/text_enroll_md/resource/LibriSpeech/train_all_960/wav.scp /work104/weiyang/project/maolidan_thesis/experiment/text_enroll_md/resource/LibriSpeech/train_all_960/text /work104/weiyang/project/maolidan_thesis/experiment/text_enroll_md/resource/LibriSpeech/librispeech-lexicon.txt phone2id.txt md_data_list/datalist_librispeech_960.txt
+# prepare datalist for librispeech
+# 1. download LibriSpeech data and lexicon
+# 2. convert audio format to 16k wav, and prepare $librispeech_wav_scp and $librispeech_text
+python make_datalist_librispeech.py ${librispeech_wav_scp} ${librispeech_text}  phone2id.txt md_data_list/datalist_librispeech_960.txt
 shuf md_data_list/datalist_librispeech_960.txt > md_data_list/datalist_librispeech_960_rand.txt
 head -n 500 md_data_list/datalist_librispeech_960_rand.txt > md_data_list/datalist_librispeech_960.valid.txt
 tail -n 280741 md_data_list/datalist_librispeech_960_rand.txt > md_data_list/datalist_librispeech_960.train.txt
 
-# l2arctic
+# L2-ARCTIC dataset
+# 1. download and unzip L2-ARCTIC at $L2ARCTIC_ROOT
 cd $L2ARCTIC_ROOT
 for i in $(find */wav/ -name "*.wav"); do target_path="wav_16k/$i"; mkdir -p `dirname $target_path`; sox $i -r 16000 $target_path; done
 cd -

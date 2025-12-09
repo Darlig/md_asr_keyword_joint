@@ -2,6 +2,7 @@
 
 import sys
 import json
+import os
 
 wav_scp_file = sys.argv[1]
 text_file = sys.argv[2]
@@ -57,6 +58,7 @@ lexicon = load_dict(lexicon_file)
 phone2id = load_dict(phone2id_file)
 
 datalist = make_datalist(wav_scp, text, lexicon, phone2id, unk_token='spn')
+os.makedirs(os.path.dirname(datalist_file), exist_ok=True)
 with open(datalist_file, 'w') as f:
     for entry in datalist:
         f.write(json.dumps(entry) + '\n')

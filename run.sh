@@ -22,7 +22,7 @@ find ${L2ARCTIC_ROOT}/wav_16k -name "*.wav" |awk '{print $1,$1}' |sed 's#^[^ ]*/
 
 # prepare datalist for L2-ARCTIC
 python l2arctic_make_human_label_wordseg.py $L2ARCTIC_ROOT phones.txt human_score_l2arctic_test.json
-python convert_human_label_json_into_datalist.py human_score_l2arctic_test.json wav_16k_l2arctic.scp phone2id.txt md_data_list/datalist.test.l2arctic.txt
+python convert_human_label_json_into_datalist.py human_score_l2arctic_test.json ${L2ARCTIC_ROOT}/wav_16k.scp phone2id.txt md_data_list/datalist.test.l2arctic.txt
 
 
 # train

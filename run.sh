@@ -8,7 +8,7 @@ librispeech_text=/work104/weiyang/project/maolidan_thesis/experiment/text_enroll
 # prepare datalist for librispeech
 # 1. download LibriSpeech data and lexicon
 # 2. convert audio format to 16k wav, and prepare $librispeech_wav_scp and $librispeech_text
-python make_datalist_librispeech.py ${librispeech_wav_scp} ${librispeech_text}  phone2id.txt md_data_list/datalist_librispeech_960.txt
+python make_datalist_librispeech.py ${librispeech_wav_scp} ${librispeech_text} ${LibriSpeech_lexicon} phone2id.txt md_data_list/datalist_librispeech_960.txt
 shuf md_data_list/datalist_librispeech_960.txt > md_data_list/datalist_librispeech_960_rand.txt
 head -n 500 md_data_list/datalist_librispeech_960_rand.txt > md_data_list/datalist_librispeech_960.valid.txt
 tail -n 280741 md_data_list/datalist_librispeech_960_rand.txt > md_data_list/datalist_librispeech_960.train.txt

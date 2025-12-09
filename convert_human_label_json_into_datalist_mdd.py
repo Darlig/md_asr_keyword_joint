@@ -28,9 +28,9 @@ with open(source_human_json) as f_json, open(output_datalist, 'w') as f_datalist
         utt_phones_actual = []
         utt_phones_accuracy = []
         for word_human_label in utt_human_label["words"]:
-            utt_phones.append([ phn2id_dict[phn] for phn in word_human_label["phones_actual"]])
+            utt_phones.append([ phn2id_dict[phn] for phn in word_human_label["phones"]])
             utt_phones_actual.append([ phn2id_dict[phn] for phn in word_human_label["phones_actual"]])
-            utt_phones_accuracy.append([ 0 for i in word_human_label["phones-accuracy"]])
+            utt_phones_accuracy.append([ int(not i) for i in word_human_label["phones-accuracy"]])
         utt_datalist = {
             "key": uttid,
             "sph": utt2wav_dict[uttid],

@@ -534,7 +534,7 @@ def detach_corruption(material: Dict) -> Tuple[List, List, List, List, List, Lis
 def inject_special_token(
         keyword: List[int], keyword_length: int, label: List=None, 
         positive: bool=True, keyword_pos: int=None, special_token: Dict={}, bpe_label: List=None, 
-        bpe_candidate: List=None, phonetic_auxiliary: Dict={}
+        bpe_candidate: List=None, phonetic_auxiliary: Dict={}, phone_data_aug: str=None
     )->Tuple[List, List, List, int]:
     TEXT_SPEC_TOKEN.update(special_token)
     new_phn_label = copy.deepcopy(label)
@@ -572,6 +572,8 @@ def inject_special_token(
         new_keyword = unfold_list(new_keyword)
         new_keyword_idx = [i for i in range(len(new_keyword))]
         md_label = [0 for _ in range(len(new_keyword))]
+        if phone_data_aug == None:
+            return (new_keyword, new_phn_label, new_bpe_label, keyword_pos, md_label)
         sub_idx = 1
         if len(new_keyword_idx)> 5:
             sub_idx = random.randint(1, len(new_keyword_idx)//2)
@@ -583,15 +585,18 @@ def inject_special_token(
         #if dice > 0.3:
             for i in new_keyword_idx:
                 if i in sub_idx:
-                    current_phn = new_keyword[i]
-                    if current_phn in phonetic_auxiliary['vowel']:
-                        sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
-                    elif current_phn in phonetic_auxiliary['consonant']:
-                        sub_phn = random.choice([x for x in phonetic_auxiliary['consonant'] if x != current_phn])
-                    else:
-                        sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
-                    new_keyword[i] = sub_phn
-                    md_label[i] = 1
+                    if phone_data_aug == 'intra_class_vow_con':
+                        current_phn = new_keyword[i]
+                        if current_phn in phonetic_auxiliary['vowel']:
+                            sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
+                        elif current_phn in phonetic_auxiliary['consonant']:
+                            sub_phn = random.choice([x for x in phonetic_auxiliary['consonant'] if x != current_phn])
+                        else:
+                            assert current_phn in phonetic_auxiliary['all'], "current_phn({current_phn}) must in phone set({phonetic_auxiliary['all']})"
+                            sub_phn = random.choice([x for x in phonetic_auxiliary['all'] if x != current_phn])
+                            #sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
+                        new_keyword[i] = sub_phn
+                        md_label[i] = 1
     if not positive:
         new_keyword = new_keyword[1:-1]
         md_label = [1 for _ in range(len(new_keyword))]

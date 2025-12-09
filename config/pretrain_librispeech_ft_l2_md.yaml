@@ -29,6 +29,7 @@ model_config:
         channels: 256
 
   kw_net_config:
+    #num_token: 31 # letter 1-26 special token ' and tow keyword pos_token 28, 29, 30 for unknown
     num_phn_token: 74 # phone 1-70; blank 0; sos/eos 71/72
     input_trans: 
       dim: 256
@@ -49,7 +50,7 @@ model_config:
 # experimental config
 exp_config:
   trained_ckpt: ""
-  exp_dir: exp/md_librispeech_data_aug
+  exp_dir: exp/md_librispeech_data_aug_ft_l2_train_md
   warm_up_peak_epoch: 10
   exp_name: kwatt_asr
   optim_config:
@@ -63,13 +64,13 @@ exp_config:
 
 # data config
 data_config: &base_data_config
-  epoch: 51
-  start_epoch: 0
+  epoch: 100
+  start_epoch: 50
   shuffle: True
-  num_worker: 30
+  num_worker: 16
   sph_config: !include config/base_config/self_corrupt_none_target_corrupt.yaml
   keyword_config:
-    format: sample
+    format: sample_md
     config:
       positive_prob: 1.0
       special_token:
@@ -81,10 +82,9 @@ data_config: &base_data_config
         punk: 73
         with_trans: True
       phonetic_auxiliary: phonetic_auxiliary.json
-      phone_data_aug: intra_class_vow_con
   length_key: mixspeech,speech,keyword
   fetch_key: mixspeech,mixspeech_len,phn_label,phn_label_len,keyword,keyword_len,md_label,md_label_len,target
-  batch_size: 128
-  data_list: md_data_list/datalist_librispeech_960.train.txt
-  valid_list: md_data_list/datalist_librispeech_960.valid.txt
+  batch_size: 32
+  data_list: md_data_list/datalist.train.l2arctic_mdd.txt
+  valid_list: md_data_list/datalist.train.l2arctic_mdd.samp100.txt
 

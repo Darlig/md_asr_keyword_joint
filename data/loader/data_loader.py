@@ -231,12 +231,22 @@ def Dataset(conf: Dict,  d_list: List) -> Tuple[Any, ...]:
     dataset = Processer(dataset, factory.process_text_feats, **text_config)
 
     # process keyword setting
-    keyword_setting = conf.get('keyword_config', None) 
+    keyword_setting = conf.get('keyword_config', None)
     if isinstance(keyword_setting, dict):
         keyword_format = keyword_setting.get('format')
-        assert keyword_format in ['sample', 'fix', 'test']
+        assert keyword_format in ['sample', 'sample_md', 'fix', 'test']
         keyword_config = keyword_setting.get('config', {})
-        if keyword_format == 'sample':
+        if keyword_format == 'sample_md':
+            crpt_list = copy.deepcopy(d_list)
+            random.shuffle(crpt_list)
+            keyword_config.update({'neg_len': 70})
+            phone_seq_config.update(keyword_config)
+            phonetic_auxiliary = keyword_config.get('phonetic_auxiliary', None)
+            if phonetic_auxiliary != None:
+                with open(phonetic_auxiliary) as f_aux:
+                    phone_seq_config.update({'phonetic_auxiliary': json.load(f_aux)})
+            dataset = Processer(dataset, factory.process_sampled_keyword_from_label_md,  **phone_seq_config)
+        elif keyword_format == 'sample':
             crpt_list = copy.deepcopy(d_list)
             random.shuffle(crpt_list)
             keyword_config.update({'neg_len': 70})

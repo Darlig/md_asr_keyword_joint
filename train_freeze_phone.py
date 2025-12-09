@@ -80,8 +80,6 @@ class Trainer():
         # init config info
         self.config_file = config_file
         self.data_config = config_file['data_config']
-        self.valid_data_config = config_file['data_config'].copy()
-        self.valid_data_config.update({"batch_size": 32})
         self.exp_config = config_file['exp_config']
 
         # continue training from break point
@@ -125,43 +123,31 @@ class Trainer():
             ef = open("{}/exp.yaml".format(self.exp_config['exp_dir']), 'w')
             yaml.dump(self.exp_config, ef)
 
-    def compute_redundancy(self, n, batch_size):
+    def compute_redundancy(self, n):
         r1 = n % self.world_size
-        r2 = ((n - r1) / self.world_size) % batch_size
+        r2 = ((n - r1) / self.world_size) % self.batch_size
         rt = n - r1 - r2 * self.world_size
-        #print(f"r1: {r1}, r2: {r2}, rt: {rt}")
         return int(rt)
 
     def make_data_loader(self):
         # parse datalist
-        #print(f"tr_set batch_size: {self.data_config['batch_size']}")
-        #print(f"cv_set batch_size: {self.valid_data_config['batch_size']}")
         data_list_file = self.data_config['data_list']
         self.batch_size = self.data_config['batch_size']
-        self.valid_batch_size = self.valid_data_config['batch_size']
         cv_list_file = self.data_config.get('valid_list', None)
-        #print(f"data_list_file: {data_list_file}")
-        #print(f"cv_lsit_file: {cv_list_file}")
 
         if cv_list_file:
             cv_list = read_list(cv_list_file, split_cv=False, shuffle=True)
             tr_list = read_list(data_list_file, split_cv=False, shuffle=True)
         else:
             tr_list, cv_list = read_list(data_list_file, split_cv=True, shuffle=True)
-        #print(f"tr_list length: {len(tr_list)}")
-        #print(f"cv_list length: {len(cv_list)}")
         num_train_sample = len(tr_list)
         num_valid_sample = len(cv_list)
 
-        rt_train_sampple = self.compute_redundancy(num_train_sample, self.batch_size)
-        rt_cv_sample = self.compute_redundancy(num_valid_sample, self.valid_batch_size)
-        print(f"rt_train_sample: {rt_train_sampple}")
-        print(f"rt_cv_sample: {rt_cv_sample}")
+        rt_train_sampple = self.compute_redundancy(num_train_sample)
+        rt_cv_sample = self.compute_redundancy(num_valid_sample)
 
         tr_list = tr_list[:rt_train_sampple]
         cv_list = cv_list[:rt_cv_sample]
-        #print(f"processed tr_list length: {len(tr_list)}")
-        #print(f"processed cv_list length: {len(cv_list)}")
 
         if self.data_config.get('egs_format', False):
             egs_path = os.path.dirname(data_list_file)
@@ -177,7 +163,7 @@ class Trainer():
             tr_list,
         )
         self.cv_set = Dataset(
-            self.valid_data_config,
+            self.data_config,
             cv_list,
         )
 
@@ -222,7 +208,8 @@ class Trainer():
         start_epoch = self.data_config.get('start_epoch', 0)
         if start_epoch != 0:
             ckpt = self.load_endpoint(self.data_config['start_epoch']-1)
-            self.global_step = self.load_ckpt(ckpt)
+            self.global_step = self.load_ckpt_freeze(ckpt)
+            #self.global_step = self.load_ckpt(ckpt)
         else:
             self.global_step = 0
         self.scheduler = WarmUpLR(self.optim, warmup_steps=warm_up_peak_step)
@@ -297,7 +284,28 @@ class Trainer():
                     state[k] = v.to(self.device)
         self.model.load_state_dict(model)
         return step
-    
+
+    def load_ckpt_freeze(self, ckpt):
+        ckpt_dict = torch.load(ckpt, map_location='cpu')
+        model = ckpt_dict['model']
+        opt = ckpt_dict['opt']
+        step = ckpt_dict['step']
+        self.recorder.info(f"keys: {model.keys()}")
+
+        incompatibale_keys = self.model.load_state_dict(model, strict=False)
+        if incompatibale_keys.missing_keys:
+            self.recorder.info("Missing keys: {}".format(incompatibale_keys.missing_keys))
+        if incompatibale_keys.unexpected_keys:
+            self.recorder.info("Unexpected keys: {}".format(incompatibale_keys.unexpected_keys))
+        #self.model.load_state_dict(model)
+        for name, param in self.model.named_parameters():
+            if (name.startswith("phn_emb")) or  ( name.startswith("kw_")) or ( name.startswith("md_")) or ( name.startswith("det_")):
+                param.requires_grad = False
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.recorder.info(f"TRAINABLE: {name}")
+        return step
+
     @torch.no_grad()
     def cross_valid(self):
         cv_model = copy.deepcopy(self.model)
@@ -415,6 +423,23 @@ class Trainer():
             torch.cuda.empty_cache()
             self.epoch = epoch
             self.tr_set.set_epoch(epoch)
+            if self.rank == 0 and epoch % 5 == 0:
+                self.recorder.info("au_transformer.4.self_att.q.weight: {}".format(
+                    self.model.get_parameter('au_transformer.4.self_att.q.weight')
+                ))
+                self.recorder.info("kw_trans.w1.weight: {}".format(
+                    self.model.get_parameter('kw_trans.w1.weight')
+                ))
+                self.recorder.info("kw_transformer.3.self_att.q.weight: {}".format(
+                    self.model.get_parameter('kw_transformer.3.self_att.q.weight')
+                ))
+                self.recorder.info("det_net.1.weight: {}".format(
+                    self.model.get_parameter('det_net.1.weight')
+                ))
+                #self.recorder.info("kw_adapter_trans.weight: {}".format(
+                #    self.model.get_parameter('kw_adapter_trans.weight')
+                #))
+
             for batch_id, data in enumerate(self.tr_loader):
                 torch.cuda.empty_cache()
                 clr = self.optim.param_groups[0]['lr']

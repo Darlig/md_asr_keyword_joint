@@ -1,4 +1,4 @@
-name: text_enroll_kws
+name: md_asr_keyword_joint
 channels:
   - pytorch
   - nvidia

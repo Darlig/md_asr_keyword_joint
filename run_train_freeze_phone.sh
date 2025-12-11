@@ -18,7 +18,7 @@ if [ $stage -le 1 ];then
           echo "Start $id"
           id=`expr $id - 1`
           gpu=${GPU["$id"]}
-          CUDA_VISIBLE_DEVICES=$gpu python3 -B train.py \
+          CUDA_VISIBLE_DEVICES=$gpu python3 -B train_freeze_phone.py \
               --config $config \
              --world_size $world_size \
              --rank $id \

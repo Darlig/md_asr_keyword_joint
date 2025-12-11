@@ -84,7 +84,7 @@ class Trainer():
 
         # continue training from break point
         # always load config from args
-	#if self.data_config['start_epoch'] != 0:
+        #if self.data_config['start_epoch'] != 0:
         #    config_file = '{}/model.yaml'.format(self.exp_config['exp_dir'])
         #    model_config = yaml.load(open(config_file), Loader=yaml.FullLoader)
         #    self.model_config = model_config
@@ -211,8 +211,8 @@ class Trainer():
             self.global_step = self.load_ckpt(ckpt)
         else:
             self.global_step = 0
-        self.scheduler = WarmUpLR(self.optim, warmup_steps=warm_up_peak_step)
-        self.scheduler.set_step(self.global_step)
+        #self.scheduler = WarmUpLR(self.optim, warmup_steps=warm_up_peak_step)
+        #self.scheduler.set_step(self.global_step)
         if self.exp_config.get('finetune', False):
             finetune_config = self.exp_config.get('finetune')
             #trained_ckpt = finetune_config['trained_ckpt']
@@ -275,6 +275,11 @@ class Trainer():
         step = ckpt_dict['step']
 
         self.optim.load_state_dict(opt)
+        
+        target_lr = self.exp_config['optim_config']['lr']
+        for pg in self.optim.param_groups:
+                pg['lr'] = target_lr
+        
         for state in self.optim.state.values():
             for k, v in state.items():
                 if k == 'step':
@@ -421,7 +426,7 @@ class Trainer():
                             epoch, batch_id
                         )
                     )
-                self.scheduler.step()
+                #self.scheduler.step()
                 self.global_step += 1
                 tr_record_dict['total_loss'] = loss
                 tr_record_dict.update(detail_loss)

@@ -84,7 +84,7 @@ class Trainer():
 
         # continue training from break point
         # always load config from args
-	#if self.data_config['start_epoch'] != 0:
+        #if self.data_config['start_epoch'] != 0:
         #    config_file = '{}/model.yaml'.format(self.exp_config['exp_dir'])
         #    model_config = yaml.load(open(config_file), Loader=yaml.FullLoader)
         #    self.model_config = model_config
@@ -208,7 +208,8 @@ class Trainer():
         start_epoch = self.data_config.get('start_epoch', 0)
         if start_epoch != 0:
             ckpt = self.load_endpoint(self.data_config['start_epoch']-1)
-            self.global_step = self.load_ckpt(ckpt)
+            self.global_step = self.load_ckpt_freeze(ckpt)
+            #self.global_step = self.load_ckpt(ckpt)
         else:
             self.global_step = 0
         self.scheduler = WarmUpLR(self.optim, warmup_steps=warm_up_peak_step)
@@ -283,7 +284,28 @@ class Trainer():
                     state[k] = v.to(self.device)
         self.model.load_state_dict(model)
         return step
-    
+
+    def load_ckpt_freeze(self, ckpt):
+        ckpt_dict = torch.load(ckpt, map_location='cpu')
+        model = ckpt_dict['model']
+        opt = ckpt_dict['opt']
+        step = ckpt_dict['step']
+        self.recorder.info(f"keys: {model.keys()}")
+
+        incompatibale_keys = self.model.load_state_dict(model, strict=False)
+        if incompatibale_keys.missing_keys:
+            self.recorder.info("Missing keys: {}".format(incompatibale_keys.missing_keys))
+        if incompatibale_keys.unexpected_keys:
+            self.recorder.info("Unexpected keys: {}".format(incompatibale_keys.unexpected_keys))
+        #self.model.load_state_dict(model)
+        for name, param in self.model.named_parameters():
+            if (name.startswith("phn_emb")) or  ( name.startswith("kw_")) or ( name.startswith("md_")) or ( name.startswith("det_")):
+                param.requires_grad = False
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.recorder.info(f"TRAINABLE: {name}")
+        return step
+
     @torch.no_grad()
     def cross_valid(self):
         cv_model = copy.deepcopy(self.model)
@@ -401,6 +423,23 @@ class Trainer():
             torch.cuda.empty_cache()
             self.epoch = epoch
             self.tr_set.set_epoch(epoch)
+            if self.rank == 0 and epoch % 5 == 0:
+                self.recorder.info("au_transformer.4.self_att.q.weight: {}".format(
+                    self.model.get_parameter('au_transformer.4.self_att.q.weight')
+                ))
+                self.recorder.info("kw_trans.w1.weight: {}".format(
+                    self.model.get_parameter('kw_trans.w1.weight')
+                ))
+                self.recorder.info("kw_transformer.3.self_att.q.weight: {}".format(
+                    self.model.get_parameter('kw_transformer.3.self_att.q.weight')
+                ))
+                self.recorder.info("det_net.1.weight: {}".format(
+                    self.model.get_parameter('det_net.1.weight')
+                ))
+                #self.recorder.info("kw_adapter_trans.weight: {}".format(
+                #    self.model.get_parameter('kw_adapter_trans.weight')
+                #))
+
             for batch_id, data in enumerate(self.tr_loader):
                 torch.cuda.empty_cache()
                 clr = self.optim.param_groups[0]['lr']

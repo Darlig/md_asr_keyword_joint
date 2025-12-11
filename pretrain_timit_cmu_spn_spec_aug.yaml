@@ -45,7 +45,7 @@ model_config:
   num_kw_block: 4
   sok: 1
   eok: 2
-  loss_weight: [0.3, 0.1, 0.3]
+  loss_weight: [0.3, 0.6, 0.1]
 
 # experimental config
 exp_config:

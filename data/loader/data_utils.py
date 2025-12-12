@@ -560,13 +560,13 @@ def inject_special_token(
 
     if (TEXT_SPEC_TOKEN['with_trans']) and (positive): # modify keyword in label
         new_phn_label[keyword_pos: keyword_pos+keyword_length] = new_keyword
-        if bpe_label:
-            bpe_kw_head = bpe_candidate[keyword_pos]
-            bpe_kw_tail = bpe_candidate[keyword_pos+keyword_length]
-            bpe_kw = bpe_label[bpe_kw_head: bpe_kw_tail] # keyword in bpe label
-            bpe_kw.insert(0, [TEXT_SPEC_TOKEN['sok']])
-            bpe_kw.insert(len(bpe_kw), [TEXT_SPEC_TOKEN['eok']])
-            new_bpe_label[bpe_kw_head: bpe_kw_tail] = bpe_kw
+        #if bpe_label:
+        #    bpe_kw_head = bpe_candidate[keyword_pos]
+        #    bpe_kw_tail = bpe_candidate[keyword_pos+keyword_length]
+        #    bpe_kw = bpe_label[bpe_kw_head: bpe_kw_tail] # keyword in bpe label
+        #    bpe_kw.insert(0, [TEXT_SPEC_TOKEN['sok']])
+        #    bpe_kw.insert(len(bpe_kw), [TEXT_SPEC_TOKEN['eok']])
+        #    new_bpe_label[bpe_kw_head: bpe_kw_tail] = bpe_kw
         new_keyword = new_keyword[1:-1] 
         new_keyword = unfold_list(new_keyword)
         new_keyword_idx = [i for i in range(len(new_keyword))]
@@ -693,10 +693,10 @@ def snipe_edge(waveform: torch.Tensor, hop_length: int=160):
 def make_keyword(
         candidate_seq: List[Any], negative_seq: List[Any], 
         positive_prob: float, neg_len: Optional[int]=None, kw_position_candidate: List=None,
-        corrupt_label: List=None, max_keyword_len: int=6
+        corrupt_label: List=None, min_keyword_len: int=4, max_keyword_len: int=8
     ) -> Tuple[List, int, int, bool, int]:
 
-    keyword, keyword_pos = sample_kw_from_label(candidate_seq, kw_position_candidate, max_keyword_len)
+    keyword, keyword_pos = sample_kw_from_label(candidate_seq, kw_position_candidate, min_keyword_len, max_keyword_len)
     pos = True
     target = torch.tensor([1])
 
@@ -723,10 +723,10 @@ def make_keyword(
 def make_keyword_md(
         candidate_seq: List[Any], negative_seq: List[Any], md_label: List[Any],
         positive_prob: float, neg_len: Optional[int]=None, kw_position_candidate: List=None,
-        corrupt_label: List=None, max_keyword_len: int=6
+        corrupt_label: List=None, min_keyword_len: int=4, max_keyword_len: int=8
     ) -> Tuple[List, int, int, bool, int, List]:
 
-    keyword, keyword_pos, md_label = sample_kw_from_label_md(candidate_seq, kw_position_candidate, md_label, max_keyword_len)
+    keyword, keyword_pos, md_label = sample_kw_from_label_md(candidate_seq, kw_position_candidate, md_label, min_keyword_len, max_keyword_len)
     pos = True
     target = torch.tensor([1])
 
@@ -771,33 +771,39 @@ def make_keyword_dump(sample, positive_prob, neg_len=None):
     return kw, kw_pos, len(kw), pos, target
 
 # sample positive keyword from asr label
-def sample_kw_from_label(label: List, kw_candidate: List=None, max_keyword_len: int=6)->Tuple[List, int]:
-    kw_len = random.randint(4, max_keyword_len)
-    if kw_candidate: #TODO: a little bit confuse ...  optim it latter
-        kw_len = kw_len if kw_len < len(kw_candidate) else 1
-        kw_pos_idx = random.randint(0, len(kw_candidate)-kw_len-1) if len(kw_candidate) > kw_len+1 else 0
-        kw_pos = kw_candidate[kw_pos_idx]
-        if kw_pos_idx+kw_len >= len(kw_candidate):
-            kw_len -= 1 
-        kw_len = kw_candidate[kw_pos_idx+kw_len] - kw_pos
-    else:
-        kw_pos = random.randint(0, len(label)-kw_len) if len(label) > kw_len else 0
+def sample_kw_from_label(label: List, kw_candidate: List=None, min_keyword_len: int=4, max_keyword_len: int=8)->Tuple[List, int]:
+    max_keyword_len = min([max_keyword_len, len(label)])
+    min_keyword_len = min([min_keyword_len, len(label)])
+    kw_len = random.randint(min_keyword_len, max_keyword_len)
+    #if kw_candidate: #TODO: a little bit confuse ...  optim it latter
+    #    kw_len = kw_len if kw_len < len(kw_candidate) else 1
+    #    kw_pos_idx = random.randint(0, len(kw_candidate)-kw_len-1) if len(kw_candidate) > kw_len+1 else 0
+    #    kw_pos = kw_candidate[kw_pos_idx]
+    #    if kw_pos_idx+kw_len >= len(kw_candidate):
+    #        kw_len -= 1 
+    #    kw_len = kw_candidate[kw_pos_idx+kw_len] - kw_pos
+    #else:
+    kw_pos = random.randint(0, len(label)-kw_len) if len(label) > kw_len else 0
     kw = label[kw_pos: kw_pos + kw_len]
     assert kw_len > 0, f"kw_len({kw_len}) must > 0, label: {label}, kw_candidate: {kw_candidate}, max_keyword_len: {max_keyword_len}"
+    #print(f"phone label: {label}, keyword: {kw}")
     return (kw, kw_pos)
 
 # sample positive keyword from asr label
-def sample_kw_from_label_md(label: List, kw_candidate: List=None, md_label: List=None, max_keyword_len: int=6)->Tuple[List, int]:
-    kw_len = random.randint(4, max_keyword_len)
-    if kw_candidate: #TODO: a little bit confuse ...  optim it latter
-        kw_len = kw_len if kw_len < len(kw_candidate) else 1
-        kw_pos_idx = random.randint(0, len(kw_candidate)-kw_len-1) if len(kw_candidate) > kw_len+1 else 0
-        kw_pos = kw_candidate[kw_pos_idx]
-        if kw_pos_idx+kw_len >= len(kw_candidate):
-            kw_len -= 1 
-        kw_len = kw_candidate[kw_pos_idx+kw_len] - kw_pos
-    else:
-        kw_pos = random.randint(0, len(label)-kw_len) if len(label) > kw_len else 0
+def sample_kw_from_label_md(label: List, kw_candidate: List=None, md_label: List=None, min_keyword_len: int=4, max_keyword_len: int=8)->Tuple[List, int]:
+    max_keyword_len = min([max_keyword_len, len(label)])
+    min_keyword_len = min([min_keyword_len, len(label)])
+    kw_len = random.randint(min_keyword_len, max_keyword_len)
+    #kw_len = min([kw_len, len(label)])
+    #if kw_candidate: #TODO: a little bit confuse ...  optim it latter
+    #    kw_len = kw_len if kw_len < len(kw_candidate) else 1
+    #    kw_pos_idx = random.randint(0, len(kw_candidate)-kw_len-1) if len(kw_candidate) > kw_len+1 else 0
+    #    kw_pos = kw_candidate[kw_pos_idx]
+    #    if kw_pos_idx+kw_len >= len(kw_candidate):
+    #        kw_len -= 1 
+    #    kw_len = kw_candidate[kw_pos_idx+kw_len] - kw_pos
+    #else:
+    kw_pos = random.randint(0, len(label)-kw_len) if len(label) > kw_len else 0
     kw = label[kw_pos: kw_pos + kw_len]
     md = md_label[kw_pos: kw_pos + kw_len]
     return (kw, kw_pos, md)

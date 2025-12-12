@@ -397,7 +397,7 @@ def process_text_feats_dump(data, neg_token=None, sc_token=None):
 
 # Process: sample keyword from continues label
 def process_sampled_keyword_from_label(
-        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, max_keyword_len: int=8, phonetic_auxiliary: Dict = {}, phone_data_aug: str = None
+        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, min_keyword_len: int=4, max_keyword_len: int=8, phonetic_auxiliary: Dict = {}, phone_data_aug: str = None
 ):
     # TEXT_SPEC_TOKEN = {'sos','eos','sok', 'eok', 'unk'}
     # sos: start of setence, eos: end of setence, sok: start of keyword, eok, end of keyword, unk: unknow token
@@ -414,7 +414,7 @@ def process_sampled_keyword_from_label(
         kw, kw_pos, kw_length, pos, target = utils.make_keyword(
             candidate_seq=new_phn_label, negative_seq=sample['neg_candidate'], 
             positive_prob=positive_prob, neg_len=neg_len, kw_position_candidate=sample['kw_candidate'],
-            corrupt_label=corrupt_label, max_keyword_len=max_keyword_len
+            corrupt_label=corrupt_label, min_keyword_len=min_keyword_len, max_keyword_len=max_keyword_len
         )
         kw, new_phn_label, new_bpe_label, kw_pos, md_label = utils.inject_special_token(
             keyword=kw, keyword_length=kw_length, positive=pos, label=new_phn_label, 
@@ -428,7 +428,7 @@ def process_sampled_keyword_from_label(
 
 # Process: sample keyword from continues label
 def process_sampled_keyword_from_label_md(
-        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, max_keyword_len: int=8, phonetic_auxiliary: Dict = {}, phone_data_aug: str = None
+        data: Iterator[Dict], positive_prob: float=0.5, neg_len: int = None, special_token: Dict = {}, min_keyword_len: int=4, max_keyword_len: int=8, phonetic_auxiliary: Dict = {}, phone_data_aug: str = None
 ):
     # TEXT_SPEC_TOKEN = {'sos','eos','sok', 'eok', 'unk'}
     # sos: start of setence, eos: end of setence, sok: start of keyword, eok, end of keyword, unk: unknow token
@@ -447,7 +447,7 @@ def process_sampled_keyword_from_label_md(
         kw, kw_pos, kw_length, pos, target, md_label = utils.make_keyword_md(
             candidate_seq=new_phn_label, negative_seq=sample['neg_candidate'], md_label=md_label,
             positive_prob=positive_prob, neg_len=neg_len, kw_position_candidate=sample['kw_candidate'],
-            corrupt_label=corrupt_label, max_keyword_len=max_keyword_len
+            corrupt_label=corrupt_label, min_keyword_len=min_keyword_len, max_keyword_len=max_keyword_len
         )
         kw, new_sph_label, new_bpe_label, kw_pos, md_label = utils.inject_special_token_md(
             keyword=kw, keyword_length=kw_length, positive=pos, label=new_sph_label, 

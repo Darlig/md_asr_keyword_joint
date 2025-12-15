@@ -568,7 +568,7 @@ def inject_special_token(
         #    bpe_kw.insert(0, [TEXT_SPEC_TOKEN['sok']])
         #    bpe_kw.insert(len(bpe_kw), [TEXT_SPEC_TOKEN['eok']])
         #    new_bpe_label[bpe_kw_head: bpe_kw_tail] = bpe_kw
-        new_keyword = new_keyword[1:-1] 
+        #new_keyword = new_keyword[1:-1] 
         new_keyword = unfold_list(new_keyword)
         new_keyword_idx = [i for i in range(len(new_keyword))]
         md_label = [0 for _ in range(len(new_keyword))]
@@ -697,7 +697,9 @@ def make_keyword(
         corrupt_label: List=None, max_keyword_len: int=6
     ) -> Tuple[List, int, int, bool, int]:
 
-    keyword, keyword_pos = sample_kw_from_label(candidate_seq, kw_position_candidate, max_keyword_len)
+    #keyword, keyword_pos = sample_kw_from_label(candidate_seq, kw_position_candidate, max_keyword_len)
+    keyword = candidate_seq
+    keyword_pos = 0
     pos = True
     target = torch.tensor([1])
 

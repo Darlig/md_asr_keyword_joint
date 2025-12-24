@@ -212,7 +212,11 @@ def Dataset(conf: Dict,  d_list: List) -> Tuple[Any, ...]:
         rirs_list = sph_config['rirs_list']
         rirs_list = read_list(rirs_list)
         data_list_config.update({'rirs_list': rirs_list})
-        
+
+    if conf.get('index_map', False):
+        with open(conf['index_map']) as f:
+            index_map = json.load(f)
+        factory.set_shard_index(index_map)
 
     # Build data list
     dataset = DataList(**data_list_config)

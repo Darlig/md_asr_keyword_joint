@@ -13,6 +13,41 @@ import data.loader.data_utils as utils
 
 from typing_extensions import Tuple, Dict, Iterator, Any, Optional
 from local.zeus_error import DataLoaderError
+import tarfile
+import io
+
+_SHARD_INDEX = None
+_SHARD_HANDLES = {}
+
+def set_shard_index(index_map):
+    global _SHARD_INDEX
+    _SHARD_INDEX = index_map
+
+def load_raw_forward_compatible(x):
+    # ① 原实验：wav path（完全兼容）
+    if isinstance(x, str) and x.endswith('.wav'):
+    #if isinstance(x, str) and os.path.isfile(x):
+    #if isinstance(x, str):
+        return torchaudio.load(x)
+
+    # ② shard 实验：x 是 key
+    if _SHARD_INDEX is None:
+        raise RuntimeError(
+            f"Shard index not set, but got non-path input: {x}"
+        )
+
+    key = x
+    meta = _SHARD_INDEX[key]
+    shard_path = meta["shard"]
+    member = meta["member"]
+
+    tar = _SHARD_HANDLES.get(shard_path)
+    if tar is None:
+        tar = tarfile.open(shard_path, "r")
+        _SHARD_HANDLES[shard_path] = tar
+
+    data = tar.extractfile(member).read()
+    return torchaudio.load(io.BytesIO(data))
 
 # Pre-Defined None-Tensor Key & CTC Tag
 NONE_TENSOR_KEY = [
@@ -38,7 +73,7 @@ TEXT_SPEC_TOKEN = {
 
 # input loader and feats extractor mapping
 INPUT_DATA_LOADER = {
-    'raw': torchaudio.load, 'kaldi': kaldi_io.read_mat, 'torch': torch.load,
+    'raw': load_raw_forward_compatible, 'kaldi': kaldi_io.read_mat, 'torch': torch.load,
     'rm_sr': lambda x: x[0], 'copy': copy.deepcopy, 'empty': lambda x: x,
     'read_sr': lambda x: x[1]
 }
@@ -70,7 +105,6 @@ RANDOM_FACTOR = {
 TRANSFORM_FACTOR ={
     'nptolist': lambda x: x.tolist() if isinstance(x, np.ndarray) else x
 }
-
 
 # process raw json line
 # data list is aranged in json format, in this function convert json into dict

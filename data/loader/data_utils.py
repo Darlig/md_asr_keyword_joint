@@ -129,6 +129,7 @@ def substitution_neg_by_lex_shengyun_constraint_tone(
       - 单音素（len!=2）保持不改（与原函数一致）
       - 若某类替换无候选，则按“优先级”回退到其他类；最终仍无候选则该字不改
     """
+    # print(f"Substitution_neg_by_lex_shengyun_constraint_tone: p_change={p_change}, type_weights={type_weights}")
     by_init   = aux_lexicon.get('by_init', {})
     by_final  = aux_lexicon.get('by_final', {})
     legal_pairs = aux_lexicon.get('by_len', {}).get('1', None)  # 仅供 both 使用
@@ -695,7 +696,7 @@ def detach_corruption(material: Dict) -> Tuple[List, List, List, List, List, Lis
 def inject_special_token(
         keyword: List[int], keyword_length: int, label: List=None, 
         positive: bool=True, keyword_pos: int=None, special_token: Dict={}, bpe_label: List=None, 
-        bpe_candidate: List=None, phonetic_auxiliary: Dict={}, phone_data_aug: str=None
+        bpe_candidate: List=None, phonetic_auxiliary: Dict={}, phone_data_aug=None, p_tone: float=0.0
     )->Tuple[List, List, List, int]:
     TEXT_SPEC_TOKEN.update(special_token)
     new_phn_label = copy.deepcopy(label)
@@ -730,15 +731,27 @@ def inject_special_token(
         #    bpe_kw.insert(len(bpe_kw), [TEXT_SPEC_TOKEN['eok']])
         #    new_bpe_label[bpe_kw_head: bpe_kw_tail] = bpe_kw
         #new_keyword = new_keyword[1:-1] 
-        if phone_data_aug == None:
+
+        aug_name = None
+        aug_params = {}
+        if phone_data_aug is None:
+            aug_name = None
+        elif isinstance(phone_data_aug, str):
+            aug_name = phone_data_aug
+        elif isinstance(phone_data_aug, dict):
+            aug_name = phone_data_aug.get('name', None)
+            aug_params = phone_data_aug.get('params', {})
+        else:
+            raise NotImplementedError(f"Not support phone_data_aug: {phone_data_aug}")
+
+        if aug_name is None:
             new_keyword = unfold_list(new_keyword)
             md_label = [0 for _ in range(len(new_keyword))]
-        elif phone_data_aug == 'intra_class_vow_con':
+        elif aug_name == 'intra_class_vow_con':
+            # print("Apply intra_class_vow_con augmentation")
             new_keyword = unfold_list(new_keyword)
             new_keyword_idx = [i for i in range(len(new_keyword))]
             md_label = [0 for _ in range(len(new_keyword))]
-        # if phone_data_aug == None:
-        #     return (new_keyword, new_phn_label, new_bpe_label, keyword_pos, md_label)
             sub_idx = 1
             if len(new_keyword_idx)> 5:
                 sub_idx = random.randint(1, len(new_keyword_idx)//2)
@@ -750,10 +763,18 @@ def inject_special_token(
             #if dice > 0.3:
                 for i in new_keyword_idx:
                     if i in sub_idx:
-                        # if phone_data_aug == 'intra_class_vow_con':
                         current_phn = new_keyword[i]
                         if current_phn in phonetic_auxiliary['vowel']:
-                            sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
+                            if p_tone > 0 and random.uniform(0,1) < p_tone:
+                                change_tone_cand = phonetic_auxiliary['alt_tone'].get(str(current_phn), [])
+                                if change_tone_cand:
+                                    sub_phn = random.choice(change_tone_cand)
+                                    # print(f"Info: phoneme {current_phn} change to {sub_phn} by tone change.")
+                                else:
+                                    print(f"Warning: phoneme {current_phn} has no tone change candidate in alt_tone map.")
+                                    sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
+                            else:
+                                sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
                         elif current_phn in phonetic_auxiliary['consonant']:
                             sub_phn = random.choice([x for x in phonetic_auxiliary['consonant'] if x != current_phn])
                         else:
@@ -762,17 +783,18 @@ def inject_special_token(
                             #sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
                         new_keyword[i] = sub_phn
                         md_label[i] = 1
-        elif phone_data_aug == 'substitution_neg_by_lex_shengyun_constraint_tone':
+        elif aug_name == 'substitution_neg_by_lex_shengyun_constraint_tone':
+            # print(f"Apply substitution_neg_by_lex_shengyun_constraint_tone augmentation, params: {aug_params}")
             dice = random.uniform(0,1)
             if dice > 0.01:
-                new_keyword, correctness_label = substitution_neg_by_lex_shengyun_constraint_tone(new_keyword, phonetic_auxiliary, p_change=0.8, type_weights={'init': 0.1, 'final': 0.1, 'both': 0.1, 'tone': 0.7})
+                new_keyword, correctness_label = substitution_neg_by_lex_shengyun_constraint_tone(new_keyword, phonetic_auxiliary, **aug_params)
                 new_keyword = unfold_list(new_keyword)
                 md_label = [ 1 - x for x in correctness_label]
             else:
                 new_keyword = unfold_list(new_keyword)
                 md_label = [0 for _ in range(len(new_keyword))]
         else:
-            raise NotImplementedError(f"Not support phone_data_aug type: {phone_data_aug}")
+            raise NotImplementedError(f"Not support phone_data_aug: {phone_data_aug}")
     if not positive:
         new_keyword = new_keyword[1:-1]
         md_label = [1 for _ in range(len(new_keyword))]
@@ -785,7 +807,7 @@ def inject_special_token(
 def inject_special_token_md(
         keyword: List[int], keyword_length: int, label: List=None, 
         positive: bool=True, keyword_pos: int=None, special_token: Dict={}, bpe_label: List=None, 
-        bpe_candidate: List=None, phonetic_auxiliary: Dict={}, md_label: List=None, phone_data_aug: str=None
+        bpe_candidate: List=None, phonetic_auxiliary: Dict={}, md_label: List=None, phone_data_aug=None, p_tone: float=0.0
     )->Tuple[List, List, List, int, List]:
     TEXT_SPEC_TOKEN.update(special_token)
     new_phn_label = copy.deepcopy(label)
@@ -824,22 +846,32 @@ def inject_special_token_md(
         #    bpe_kw.insert(len(bpe_kw), [TEXT_SPEC_TOKEN['eok']])
         #    new_bpe_label[bpe_kw_head: bpe_kw_tail] = bpe_kw
         #new_keyword = new_keyword[1:-1] 
-        if phone_data_aug == None:
+
+        aug_name = None
+        aug_params = {}
+        if phone_data_aug is None:
+            aug_name = None
+        elif isinstance(phone_data_aug, str):
+            aug_name = phone_data_aug
+        elif isinstance(phone_data_aug, dict):
+            aug_name = phone_data_aug.get('name', None)
+            aug_params = phone_data_aug.get('params', {})
+        else:
+            raise NotImplementedError(f"Not support phone_data_aug: {phone_data_aug}")
+        
+        if aug_name is None:
             new_keyword = unfold_list(new_keyword)
-            # new_keyword_idx = [i for i in range(len(new_keyword))]
             if md_label != None:
                 md_label = unfold_list(md_label)
             else:
                 md_label = [0 for _ in range(len(new_keyword))]
-        elif phone_data_aug == 'intra_class_vow_con':
+        elif aug_name == 'intra_class_vow_con':
             new_keyword = unfold_list(new_keyword)
             new_keyword_idx = [i for i in range(len(new_keyword))]
             if md_label != None:
                 md_label = unfold_list(md_label)
             else:
                 md_label = [0 for _ in range(len(new_keyword))]
-        # if phone_data_aug == None:
-        #     return (new_keyword, new_phn_label, new_bpe_label, keyword_pos, md_label)
             sub_idx = 1
             if len(new_keyword_idx)> 5:
                 sub_idx = random.randint(1, len(new_keyword_idx)//2)
@@ -850,10 +882,18 @@ def inject_special_token_md(
             #if dice > 0.3:
                 for i in new_keyword_idx:
                     if i in sub_idx:
-                        # if phone_data_aug == 'intra_class_vow_con':
                         current_phn = new_keyword[i]
                         if current_phn in phonetic_auxiliary['vowel']:
-                            sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
+                            if p_tone > 0 and random.uniform(0,1) < p_tone:
+                                change_tone_cand = phonetic_auxiliary['alt_tone'].get(str(current_phn), [])
+                                if change_tone_cand:
+                                    sub_phn = random.choice(change_tone_cand)
+                                    # print(f"Info: phoneme {current_phn} change to {sub_phn} by tone change.")
+                                else:
+                                    print(f"Warning: phoneme {current_phn} has no tone change candidate in alt_tone map.")
+                                    sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
+                            else:
+                                sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
                         elif current_phn in phonetic_auxiliary['consonant']:
                             sub_phn = random.choice([x for x in phonetic_auxiliary['consonant'] if x != current_phn])
                         else:
@@ -862,7 +902,7 @@ def inject_special_token_md(
                             #sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
                         new_keyword[i] = sub_phn
                         md_label[i] = 1
-        elif phone_data_aug == 'substitution_neg_by_lex_shengyun_constraint_tone':
+        elif aug_name == 'substitution_neg_by_lex_shengyun_constraint_tone':
             raise NotImplementedError("Not support substitution_neg_by_lex_shengyun_constraint_tone in md_label case")
         else:
             raise NotImplementedError(f"Not support phone_data_aug type: {phone_data_aug}")

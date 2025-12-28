@@ -771,7 +771,8 @@ def inject_special_token(
                                     sub_phn = random.choice(change_tone_cand)
                                     # print(f"Info: phoneme {current_phn} change to {sub_phn} by tone change.")
                                 else:
-                                    print(f"Warning: phoneme {current_phn} has no tone change candidate in alt_tone map.")
+                                    if current_phn != 168:
+                                        print(f"Warning: phoneme {current_phn} has no tone change candidate in alt_tone map.")
                                     sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
                             else:
                                 sub_phn = random.choice([x for x in phonetic_auxiliary['vowel'] if x != current_phn])
@@ -955,7 +956,9 @@ def make_keyword_md(
         corrupt_label: List=None, max_keyword_len: int=6
     ) -> Tuple[List, int, int, bool, int, List]:
 
-    keyword, keyword_pos, md_label = sample_kw_from_label_md(candidate_seq, kw_position_candidate, md_label, max_keyword_len)
+    #keyword, keyword_pos, md_label = sample_kw_from_label_md(candidate_seq, kw_position_candidate, md_label, max_keyword_len)
+    keyword = candidate_seq
+    keyword_pos = 0
     pos = True
     target = torch.tensor([1])
 

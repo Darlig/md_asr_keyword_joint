@@ -2,6 +2,7 @@ import argparse
 import os
 import copy
 import yaml
+import re
 
 import torch
 import torch.nn
@@ -340,6 +341,74 @@ class Trainer():
             d_model = d_model.state_dict()
         opt = opt.state_dict()
         return d_model, opt
+
+    def _get_keep_last_ckpt_n(self):
+        # Prefer an explicit keep_last_ckpt; fallback to avg_epoch; default 11
+        n = self.exp_config.get('keep_last_ckpt', None)
+        if n is None:
+            n = self.exp_config.get('avg_epoch', 11)
+        try:
+            n = int(n)
+        except Exception:
+            n = 11
+        return max(n, 1)
+
+    def cleanup_epoch_checkpoints(self, keep_n: int, keep_epochs=None):
+        """Delete old numeric-epoch checkpoints safely.
+
+        Only deletes files strictly matching: {exp_name}_{epoch}.pt where epoch is digits.
+        Never deletes avg/best/other files.
+        """
+        if keep_epochs is None:
+            keep_epochs = set()
+        else:
+            keep_epochs = set(keep_epochs)
+
+        exp_dir = self.exp_config['exp_dir']
+        exp_name = self.exp_config['exp_name']
+        pattern = re.compile(rf"^{re.escape(exp_name)}_(\d+)\.pt$")
+
+        try:
+            files = os.listdir(exp_dir)
+        except Exception as e:
+            self.recorder.info(f"[ckpt-cleanup] failed to list dir {exp_dir}: {e}")
+            return
+
+        epoch_files = []
+        for fn in files:
+            m = pattern.match(fn)
+            if not m:
+                continue
+            try:
+                ep = int(m.group(1))
+            except Exception:
+                continue
+            epoch_files.append((ep, os.path.join(exp_dir, fn)))
+
+        if not epoch_files:
+            return
+
+        epoch_files.sort(key=lambda x: x[0])
+        # Keep newest keep_n epochs + any explicitly requested epochs
+        keep_set = set(ep for ep, _ in epoch_files[-keep_n:]) | keep_epochs
+
+        to_delete = [(ep, path) for ep, path in epoch_files if ep not in keep_set]
+        if not to_delete:
+            return
+
+        self.recorder.info(
+            "[ckpt-cleanup] deleting {} old checkpoints; keeping newest {} (+{})".format(
+                len(to_delete), keep_n, len(keep_epochs)
+            )
+        )
+        for ep, path in to_delete:
+            try:
+                os.remove(path)
+                self.recorder.info(f"[ckpt-cleanup] deleted epoch {ep}: {path}")
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                self.recorder.info(f"[ckpt-cleanup] failed to delete epoch {ep}: {path} ({e})")
     
     def record_step(self, r_loss):
         assert (isinstance(r_loss, dict))
@@ -369,10 +438,9 @@ class Trainer():
             )
     
     def avg_model(self):
-        # average the last 10 model
+        # average the last avg_epoch model
         max_epoch = self.data_config['epoch']
-        avg_epoch = self.exp_config.get('avg_epoch', 10)
-        #max_epoch = 50
+        avg_epoch = self.exp_config.get('avg_epoch', 11)
         min_epoch = max_epoch - avg_epoch
         valid_ckpt = {k:0 for k in range(min_epoch, max_epoch)}
         valid_loss = []
@@ -383,7 +451,7 @@ class Trainer():
             valid_ckpt[e] = ckpt['model']
             valid_loss.append(one_valid_loss)
         sort_idx = sorted(range(len(valid_loss)), key=lambda k: valid_loss[k])
-        min_idx = sort_idx[:10]
+        min_idx = sort_idx[:avg_epoch]
         state = None
         avg_model = None
         for k in min_idx:
@@ -396,8 +464,9 @@ class Trainer():
                     avg_model[k] += state[k]
         for k in avg_model.keys():
             if avg_model[k] is not None:
-                avg_model[k] = torch.true_divide(avg_model[k], 10)
-        self.recorder.save_state(avg_model, epoch='avg')
+                avg_model[k] = torch.true_divide(avg_model[k], avg_epoch)
+        avg_tag = f"avg_{min_epoch}-{max_epoch-1}"
+        self.recorder.save_state(avg_model, epoch=avg_tag)
         
     def train(self):
         torch.manual_seed(self.seed)
@@ -446,6 +515,9 @@ class Trainer():
             if self.rank == 0:
                 self.record_step({'cv': cv_record_dict})
                 self.record_epoch(cv_record_dict)
+                # rolling keep only newest N numeric-epoch checkpoints
+                keep_n = self._get_keep_last_ckpt_n()
+                self.cleanup_epoch_checkpoints(keep_n=keep_n)
         
     def run(self, step):
 
@@ -461,6 +533,9 @@ class Trainer():
         # avg model step
         if (step <= 2) and (self.rank == 0):
             self.avg_model()
+            # final state: keep avg checkpoint (non-numeric tag) and keep only latest numeric epoch ckpt
+            last_epoch = int(self.data_config['epoch']) - 1
+            self.cleanup_epoch_checkpoints(keep_n=1, keep_epochs={last_epoch})
         
         # evaluate ...
 

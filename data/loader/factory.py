@@ -206,25 +206,28 @@ def process_speech_feats(data: Iterator[Dict], config: Dict[Any, Any]) -> Iterat
 
         # detach speech feats and noise feats
         speech_feats = [INPUT_DATA_LOADER[input_data_type](x) for x in speech_feats]
-        sample_rate = INPUT_DATA_LOADER['read_sr'](speech_feats[0])  # TODO: this is a temp code 
-        speech_feats = [INPUT_DATA_LOADER['rm_sr'](x) for x in speech_feats] if input_data_type == 'raw' else speech_feats
+        if input_data_type == 'raw':
+            sample_rate = INPUT_DATA_LOADER['read_sr'](speech_feats[0])  # TODO: this is a temp code 
+            speech_feats = [INPUT_DATA_LOADER['rm_sr'](x) for x in speech_feats]
+        else:
+            sample_rate = None
         noise_feats = [INPUT_DATA_LOADER[input_data_type](x) for x in noise_feats]
         noise_feats = [INPUT_DATA_LOADER['rm_sr'](x) for x in noise_feats] if input_data_type == 'raw' else noise_feats
 
         # Wav augment: volume & speed change
-        if config.get('wav_augment', False):
+        if input_data_type == 'raw' and config.get('wav_augment', False):
             wav_augment_config = config.get('wav_augment')
             speech_feats = [utils.wav_augment(f, wav_augment_config, sample_rate) for f in speech_feats]
             
 
         # reverb_aug: reverbration 
-        if sample.get('rirs', None):
+        if input_data_type == 'raw' and sample.get('rirs', None):
             rirs_config = config.get('rirs')
             assert ('rirs' in sample)
             rirs_src = sample['rirs']
             speech_feats = [utils.reverb_aug(f, rirs_config, rirs_src) for f in speech_feats] 
 
-        if sample.get('num_corrupt', 0) > 0:
+        if input_data_type == 'raw' and sample.get('num_corrupt', 0) > 0:
             mix_config = sample.get('mix_config', {})
             feats = utils.make_mix_wav(speech_feats, self_crpt_ratios, noise_feats, noise_crpt_ratios, **mix_config)
         else:
@@ -238,10 +241,13 @@ def process_speech_feats(data: Iterator[Dict], config: Dict[Any, Any]) -> Iterat
                 raw_wav = copy.deepcopy(speech_feats[i][:, sample_head:sample_head+dur])
                 sample.update({'raw_wav{}'.format(i): raw_wav.squeeze(0)})  
 
-        # Extract feature: MFCC / FBANK 
-        feats_type = config.get('feats_type', 'fbank')
-        feats_config = config.get('feats_config', FBANK_DEFAULT_SETTING)
-        feats = [FEATS_EXTRACTOR[feats_type](f, **feats_config) for f in feats]
+        ## Extract feature: MFCC / FBANK 
+        #feats_type = config.get('feats_type', 'fbank')
+        #feats_config = config.get('feats_config', FBANK_DEFAULT_SETTING)
+        #feats = [FEATS_EXTRACTOR[feats_type](f, **feats_config) for f in feats]
+        #print(f"feats len: {len(feats)}, feats[0] shape: {feats[0].shape}")
+        if input_data_type == 'raw':
+            feats = feats[0]
 
 
         # Splice Feature: add context

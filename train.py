@@ -68,6 +68,15 @@ def get_args():
     return args
 
 
+def move_to_device(x, device):
+    if torch.is_tensor(x):
+        return x.to(device, non_blocking=True)
+    if isinstance(x, (list, tuple)):
+        return type(x)(move_to_device(v, device) for v in x)
+    if isinstance(x, dict):
+        return {k: move_to_device(v, device) for k, v in x.items()}
+    return x
+
 class Trainer():
     def __init__(
         self,
@@ -110,6 +119,7 @@ class Trainer():
             self.rank
         )
         self.recorder = Recorder(self.exp_config) 
+
 
     def backup_configs(self):
         for k, v in self.config_file.items():
@@ -307,7 +317,8 @@ class Trainer():
         num_utt = 0
         for batch_id, cv_data in enumerate(self.cv_loader):
             n = cv_data[0].size(0)
-            cv_data = (d.to(self.device) for d in cv_data)
+            cv_data = (move_to_device(d, self.device) for d in cv_data)
+            #cv_data = (d.to(self.device) for d in cv_data)
             num_utt += n
             total_loss, detail_loss = cv_model(cv_data) 
             detail_loss = self.detach_from_graph(detail_loss)
@@ -492,7 +503,8 @@ class Trainer():
                 b = data[0].size(0)
                 #if b != self.batch_size:
                 #    continue
-                train_data = (d.to(self.device) for d in data)
+                #train_data = (d.to(self.device) for d in data)
+                train_data = (move_to_device(d, self.device) for d in data)
                 loss, detail_loss = self.model(train_data)
                 self.optim.zero_grad()
                 loss.backward()

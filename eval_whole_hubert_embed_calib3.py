@@ -1,0 +1,774 @@
+import re
+import json
+import sys
+import yaml
+import torchaudio
+import torch
+import random
+import os
+import argparse
+
+import torchaudio.compliance.kaldi as kaldi
+import numpy as np
+import matplotlib.pyplot as plt
+
+from yamlinclude import YamlIncludeConstructor
+from local.utils import  read_list, remove_duplicates_and_blank, compute_cer
+from data.loader.data_utils import unfold_list
+from model.TransformerKWSPhone_hubert_wenet_embed_3md_adaptor import TransformerKWSPhone_hubert_wenet_embed_3md_adaptor
+from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
+import csv
+
+
+FBANK_EXTRACTOR = kaldi.fbank
+PATTERN = re.compile('^.*?LibriSpeech/')
+l2arctic_prior = 0.1377
+target_precisions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+target_recalls = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+
+def safe_logit(p: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Convert probability p in (0,1) to logit with clamping for numerical safety."""
+    p = p.clamp(min=eps, max=1.0 - eps)
+    return torch.log(p) - torch.log1p(-p)
+
+def apply_temperature_to_prob(det_prob: torch.Tensor, temperature: float) -> torch.Tensor:
+    """
+    det_prob: sigmoid output probability from current model (0..1)
+    returns: calibrated probability using temperature scaling in logit space
+    """
+    if temperature is None:
+        return det_prob
+    logits = safe_logit(det_prob)
+    return torch.sigmoid(logits / float(temperature))
+
+
+def apply_temperature_to_probs(det_probs, temperature):
+    """
+    det_probs: list/tuple of 3 tensors (sigmoid probabilities), each shape (N,)
+    temperature can be:
+      - None: no calibration
+      - float: apply to the MEAN probability only (backward compatible)
+      - list/tuple of 3 floats: apply per-head temperature, then average calibrated probs
+      - dict: supports {'head1':T1,'head2':T2,'head3':T3} or {'temperature':[...]} style
+    Returns:
+      det_calib_list (list[Tensor] or None), det_mean_calib (Tensor)
+    """
+    # normalize temperature object
+    t = temperature
+    if isinstance(t, dict):
+        if "temperature" in t:
+            t = t["temperature"]
+        elif all(k in t for k in ["head1", "head2", "head3"]):
+            t = [t["head1"], t["head2"], t["head3"]]
+
+    if t is None:
+        det_mean = (det_probs[0] + det_probs[1] + det_probs[2]) / 3.0
+        return None, det_mean
+
+    if isinstance(t, (list, tuple)):
+        if len(t) != 3:
+            raise ValueError(f"Per-head temperature must have length 3, got {len(t)}")
+        det_calib = [apply_temperature_to_prob(det_probs[i], float(t[i])) for i in range(3)]
+        det_mean = (det_calib[0] + det_calib[1] + det_calib[2]) / 3.0
+        return det_calib, det_mean
+
+    # scalar temperature: calibrate mean only
+    det_mean = (det_probs[0] + det_probs[1] + det_probs[2]) / 3.0
+    det_mean = apply_temperature_to_prob(det_mean, float(t))
+    return None, det_mean
+
+
+def compute_dcf(y_true, y_scores, save_dir, test_id, cost_miss=1.0, cost_fa=1.0, prior_target=0.5):
+    assert cost_miss > 0 and cost_miss <= 1
+    assert cost_fa > 0 and cost_fa <= 1
+    assert prior_target > 0 and prior_target < 1
+
+    # accept either torch tensors or numpy arrays
+    if hasattr(y_scores, 'numpy'):
+        y_scores = y_scores.numpy()
+    else:
+        y_scores = np.asarray(y_scores)
+    if hasattr(y_true, 'numpy'):
+        y_true = y_true.numpy()
+    else:
+        y_true = np.asarray(y_true)
+
+    fpr, tpr, thresholds_roc = roc_curve(y_true, y_scores)
+    # skip first row of roc_curve with threshold inf
+    fpr, tpr, thresholds_roc = fpr[1:], tpr[1:], thresholds_roc[1:]
+
+    roc_thresh_dict = {}
+    for i in range(len(fpr)):
+        roc_thresh_dict[thresholds_roc[i]] = (fpr[i], tpr[i])
+
+    # dcf(threshold) = cost_miss * prior_target * p_miss(threshold) + cost_fa * (1 - prior_target) * p_fa(threshold)
+    dcf = np.min(cost_miss * prior_target * (1 - tpr) + cost_fa * (1 - prior_target) * fpr)
+    dcf_index = np.argmin(cost_miss * prior_target * (1 - tpr) + cost_fa * (1 - prior_target) * fpr)
+    dcf_threshold = thresholds_roc[dcf_index]
+    pred_pos = y_scores >= dcf_threshold
+    TP = int(np.sum(pred_pos & (y_true == 1)))
+    FP = int(np.sum(pred_pos & (y_true == 0)))
+    P = int(np.sum(y_true == 1))
+    dcf_precision = TP / (TP + FP) if (TP + FP) else 0.0
+    dcf_recall = TP / P if P else 0.0
+    dcf_f1 = 2 * dcf_precision * dcf_recall / (dcf_precision + dcf_recall + 1e-12)
+    print("{} DCF:".format(test_id))
+    print("cost_miss: {0}, cost_fa: {1}".format(cost_miss, cost_fa))
+    print("prior_target: {0}".format(prior_target))
+    print("DCF: {0:f}".format(dcf))
+    print("DCF threshold: {0}".format(dcf_threshold))
+    print("DCF p_miss: {0}".format(1 - tpr[dcf_index]))
+    print("DCF p_fa: {0}".format(fpr[dcf_index]))
+    print("DCF recall: {0}".format(dcf_recall))
+    print("DCF precision: {0}".format(dcf_precision))
+    print("DCF F1: {0}".format(dcf_f1))
+    with open(os.path.join(save_dir, f"dcf_{test_id}.txt"), 'w') as f_dcf:
+        f_dcf.write("cost_miss: {0}, cost_fa: {1}\n".format(cost_miss, cost_fa))
+        f_dcf.write("prior_target: {0}\n".format(prior_target))
+        f_dcf.write("DCF: {0:f}\n".format(dcf))
+        f_dcf.write("DCF threshold: {0}\n".format(dcf_threshold))
+        f_dcf.write("DCF p_miss: {0}\n".format(1 - tpr[dcf_index]))
+        f_dcf.write("DCF p_fa: {0}\n".format(fpr[dcf_index]))
+        f_dcf.write("DCF recall: {0}\n".format(dcf_recall))
+        f_dcf.write("DCF precision: {0}\n".format(dcf_precision))
+        f_dcf.write("DCF F1: {0}\n".format(dcf_f1))
+
+def _recall_at_precision(precision, recall, p, mode="max"):
+    """Return (best_recall, matched_precision, f1) at/above target precision p.
+
+    - mode="max": 在 precision >= p 的点集中，找 recall 最大的点；若有并列，取 precision 最小者。
+    - mode="interp": 在按 precision 升序插值得到 r=recall(p)，返回 (r, p, f1(p,r))。
+    """
+    p = float(np.clip(p, 0.0, 1.0))
+    precision = np.asarray(precision, dtype=float)
+    recall = np.asarray(recall, dtype=float)
+
+    if mode == "interp":
+        order = np.argsort(precision)
+        prec_sorted = precision[order]
+        rec_sorted = recall[order]
+        r = float(np.interp(p, prec_sorted, rec_sorted))
+        f1 = (2 * p * r) / (p + r) if (p + r) > 0.0 else 0.0
+        return r, p, f1
+
+    # mode == "max"
+    mask = (precision >= p)
+    if not np.any(mask):
+        return None, None, None  # 达不到目标 precision
+
+    idxs = np.nonzero(mask)[0]
+    rec_mask = recall[idxs]
+    max_r = np.max(rec_mask)
+
+    # 并列 recall 时取 precision 最小的那个点
+    tie_idxs = idxs[rec_mask == max_r]
+    best_idx = tie_idxs[np.argmin(precision[tie_idxs])]
+
+    best_r = float(recall[best_idx])
+    best_p = float(precision[best_idx])
+    f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
+    return best_r, best_p, f1
+
+def _precision_at_recall(precision, recall, r, mode="max"):
+    """Return (best_precision, matched_recall, f1) at/above target recall r.
+
+    - mode="max": 在 recall >= r 的点集中，找 precision 最大的点；若有并列，取 recall 最大者。
+    - mode="interp": 在按 recall 升序插值得到 p=precision(r)，返回 (p, r, f1(p,r))。
+    """
+
+    r = float(np.clip(r, 0.0, 1.0))
+    precision = np.asarray(precision, dtype=float)
+    recall = np.asarray(recall, dtype=float)
+
+    if mode == "interp":
+        order = np.argsort(recall)
+        rec_sorted = recall[order]
+        prec_sorted = precision[order]
+        p = float(np.interp(r, rec_sorted, prec_sorted))
+        f1 = (2 * p * r) / (p + r) if (p + r) > 0.0 else 0.0
+        return p, r, f1
+
+    # mode == "max"
+    mask = (recall >= r)
+    if not np.any(mask):
+        return None, None, None  # 达不到目标 recall
+
+    idxs = np.nonzero(mask)[0]
+    prec_mask = precision[idxs]
+    max_p = np.max(prec_mask)
+
+    # 并列 precision 时取 recall 最大的那个点
+    tie_idxs = idxs[prec_mask == max_p]
+    best_idx = tie_idxs[np.argmax(recall[tie_idxs])]
+
+    best_p = float(precision[best_idx])
+    best_r = float(recall[best_idx])
+    f1 = (2 * best_p * best_r) / (best_p + best_r) if (best_p + best_r) > 0.0 else 0.0
+    return best_p, best_r, f1
+
+
+def plot_result(hyp, ground_truth, save_dir, test_id):
+    mode = 'max'
+    # accept torch tensors or numpy arrays
+    hyp_np = hyp.numpy() if hasattr(hyp, 'numpy') else np.asarray(hyp)
+    ground_truth_np = ground_truth.numpy() if hasattr(ground_truth, 'numpy') else np.asarray(ground_truth)
+
+    # ROC
+    fpr, tpr, roc_thresholds = roc_curve(ground_truth_np, hyp_np)
+    roc_auc = auc(fpr, tpr)
+
+    # PR
+    precision, recall, pr_thresholds = precision_recall_curve(ground_truth_np, hyp_np)
+    pr_auc = average_precision_score(ground_truth_np, hyp_np)
+
+    plt.figure(figsize=(12, 6))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')  
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic')
+    plt.legend(loc="lower right")
+
+    plt.subplot(1, 2, 2)
+    plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (AUC = {pr_auc:.2f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.legend(loc="lower left")
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"roc_pr_{test_id}.png"), dpi=300)
+    print(f"ROC AUC: {roc_auc}")
+    print(f"PR AUC: {pr_auc}")
+    with open(os.path.join(save_dir, f"roc_pr_{test_id}.txt"), 'w') as f_roc:
+        f_roc.write(f"ROC AUC: {roc_auc}\n")
+        f_roc.write(f"PR AUC: {pr_auc}\n")
+        if target_recalls is not None:
+            for r in target_recalls:
+               matched_p, matched_r, matched_f1 = _precision_at_recall(precision, recall, r, mode=mode)
+               if matched_p is not None:
+                   print(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
+                   f_roc.write(f"@recall={r:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
+               else:
+                   print(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)")
+                   f_roc.write(f"precision@recall={r:.4f} ({mode}): N/A (recall 未达到)\n")
+        if target_precisions is not None:
+            for p in target_precisions:
+                matched_r, matched_p, matched_f1 = _recall_at_precision(precision, recall, p, mode=mode)
+                if matched_r is not None:
+                    print(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})")
+                    f_roc.write(f"@precision={p:.4f}: precision={matched_p:.4f}, recall={matched_r:.4f}, f1_score={matched_f1:.4f} ({mode})\n")
+                else:
+                    print(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)")
+                    f_roc.write(f"recall@precision={r:.4f} ({mode}): N/A (recall 未达到)\n")
+
+def plot_distribution(hyp, ground_truth, save_dir, test_id):
+    hyp_np = hyp.numpy() if hasattr(hyp, 'numpy') else np.asarray(hyp)
+    ground_truth_np = ground_truth.numpy() if hasattr(ground_truth, 'numpy') else np.asarray(ground_truth)
+
+    pos_scores = hyp_np[ground_truth_np == 1]
+    neg_scores = hyp_np[ground_truth_np == 0]
+    n_pos = len(pos_scores)
+    n_neg = len(neg_scores)
+    print(f"num of pos: {n_pos}, num of neg: {n_neg}")
+    plt.figure(figsize=(10, 6))
+    plt.hist(pos_scores, bins=50, alpha=0.5, label=f"Positive Samples (n={n_pos})", color='g', density=True)
+    plt.hist(neg_scores, bins=50, alpha=0.5, label=f"Negative Samples (n={n_neg})", color='r', density=True)
+    plt.xlabel('Scores')
+    plt.ylabel('Density')
+    plt.title('Score Distribution Density for Positive and Negative Samples')
+    plt.legend(loc='upper right')
+    plt.savefig(os.path.join(save_dir, f"score_distribution_{test_id}.density.png"), dpi=300)
+
+def save_results(hyp, ground_truth, ids, save_dir, test_id, hyp_multi=None):
+    """Save hyp, ground truth, and per-frame ids to compressed npz and csv.
+
+    Args:
+        hyp: (N,) tensor/array, main hypothesis scores (recommended: mean posterior)
+        ground_truth: (N,) tensor/array
+        ids: optional list of strings, length N
+        hyp_multi: optional dict with extra score arrays/tensors, e.g. {'hyp1':..., 'hyp2':..., 'hyp3':...}
+    """
+    hyp_np = hyp.numpy() if hasattr(hyp, 'numpy') else np.asarray(hyp)
+    ground_np = ground_truth.numpy() if hasattr(ground_truth, 'numpy') else np.asarray(ground_truth)
+
+    if ids is None:
+        ids_np = None
+    else:
+        ids_np = np.asarray(list(ids), dtype=object)
+        if len(ids_np) != len(hyp_np) or len(ids_np) != len(ground_np):
+            raise ValueError(
+                f"ids length mismatch: len(ids)={len(ids_np)}, len(hyp)={len(hyp_np)}, len(gd)={len(ground_np)}"
+            )
+
+    # optional extra hyp arrays
+    extra = {}
+    if hyp_multi is not None:
+        for k, v in hyp_multi.items():
+            extra[k] = v.numpy() if hasattr(v, 'numpy') else np.asarray(v)
+
+    os.makedirs(save_dir, exist_ok=True)
+    if ids_np is None:
+        np.savez_compressed(os.path.join(save_dir, f"results_{test_id}.npz"), hyp=hyp_np, gd=ground_np, **extra)
+    else:
+        np.savez_compressed(os.path.join(save_dir, f"results_{test_id}.npz"), hyp=hyp_np, gd=ground_np, ids=ids_np, **extra)
+
+    # also save csv for readability
+    csv_path = os.path.join(save_dir, f"results_{test_id}.csv")
+    with open(csv_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+
+        # keep backward-compatible columns, optionally append hyp1/hyp2/hyp3
+        extra_cols = []
+        extra_arrays = []
+        if hyp_multi is not None:
+            for k in ["hyp1", "hyp2", "hyp3"]:
+                if k in extra:
+                    extra_cols.append(k)
+                    extra_arrays.append(extra[k])
+
+        if ids_np is None:
+            writer.writerow(['hyp', 'ground_truth'] + extra_cols)
+            for idx, (h, g) in enumerate(zip(hyp_np.tolist(), ground_np.tolist())):
+                row = [h, int(g)]
+                for arr in extra_arrays:
+                    row.append(float(arr[idx]))
+                writer.writerow(row)
+        else:
+            writer.writerow(['id', 'hyp', 'ground_truth'] + extra_cols)
+            for idx, (_id, h, g) in enumerate(zip(ids_np.tolist(), hyp_np.tolist(), ground_np.tolist())):
+                row = [_id, h, int(g)]
+                for arr in extra_arrays:
+                    row.append(float(arr[idx]))
+                writer.writerow(row)
+
+def load_results(filepath):
+    """Load results from .npz or .csv. Returns (hyp_np, gd_np, ids_np_or_None)."""
+    if filepath.endswith('.npz'):
+        data = np.load(filepath, allow_pickle=True)
+        hyp = data['hyp']
+        gd = data['gd']
+        ids = data['ids'] if 'ids' in data.files else None
+        return hyp, gd, ids
+    elif filepath.endswith('.csv'):
+        hyp_list = []
+        gd_list = []
+        id_list = []
+        with open(filepath, 'r') as f:
+            reader = csv.DictReader(f)
+            has_id = 'id' in (reader.fieldnames or [])
+            for row in reader:
+                if has_id:
+                    id_list.append(row['id'])
+                hyp_list.append(float(row['hyp']))
+                gd_list.append(int(row['ground_truth']))
+        ids = np.array(id_list, dtype=object) if len(id_list) > 0 else None
+        return np.array(hyp_list), np.array(gd_list), ids
+    else:
+        raise ValueError('Unsupported results file format. Use .npz or .csv')
+
+def plot_multiple_results(result_files, labels, save_dir, test_id):
+    """Plot multiple ROC/PR curves on a single figure. result_files is list of file paths or (hyp,gd) tuples."""
+    plt.figure(figsize=(12, 6))
+
+    # left: ROC
+    plt.subplot(1, 2, 1)
+    for idx, rf in enumerate(result_files):
+        if isinstance(rf, str):
+            hyp_np, gd_np, _ = load_results(rf)
+        else:
+            hyp_np, gd_np = rf
+        fpr, tpr, _ = roc_curve(gd_np, hyp_np)
+        roc_auc = auc(fpr, tpr)
+        label = labels[idx] if labels is not None and idx < len(labels) else os.path.basename(rf) if isinstance(rf, str) else f'run{idx}'
+        plt.plot(fpr, tpr, lw=2, label=f'{label} (AUC={roc_auc:.3f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=1, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic')
+    plt.legend(loc='lower right')
+
+    # right: PR
+    plt.subplot(1, 2, 2)
+    for idx, rf in enumerate(result_files):
+        if isinstance(rf, str):
+            hyp_np, gd_np, _ = load_results(rf)
+        else:
+            hyp_np, gd_np = rf
+        precision, recall, _ = precision_recall_curve(gd_np, hyp_np)
+        pr_auc = average_precision_score(gd_np, hyp_np)
+        label = labels[idx] if labels is not None and idx < len(labels) else os.path.basename(rf) if isinstance(rf, str) else f'run{idx}'
+        plt.plot(recall, precision, lw=2, label=f'{label} (AUC={pr_auc:.3f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curve')
+    plt.legend(loc='lower left')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"roc_pr_compare_{test_id}.png"), dpi=300)
+    print(f"Saved combined ROC/PR figure to {os.path.join(save_dir, f'roc_pr_compare_{test_id}.png')}")
+
+def negative_data_aug(keyword, pos, negative_candidate=None):
+    # random phone substitute
+    keyword = unfold_list(keyword)
+    new_keyword_idx = [i for i in range(len(keyword))]
+    md_label = [0 for _ in range(len(keyword))]
+    sub_idx = 1
+    if len(new_keyword_idx)> 5:
+        sub_idx = random.randint(1, len(new_keyword_idx)//5)
+    sub_idx = random.sample(new_keyword_idx, k=sub_idx)
+    for i in new_keyword_idx:
+        if i in sub_idx:
+            current_phn = keyword[i]
+            sub_phn = random.choice([x for x in range(1, 71) if x != current_phn])
+            keyword[i] = sub_phn
+            md_label[i] = 1
+
+    ## negative candidate from word mispronunce map
+    #keyword_length = len(keyword)
+    #new_keyword_idx = [i for i in range(keyword_length)]
+    #md_label = [ [ 0 for phn in word ] for word in keyword ]
+    #sub_idx = 1
+    #if len(new_keyword_idx)> 3:
+    ##if len(new_keyword_idx)> 5:
+    #    sub_idx = random.randint(1, len(new_keyword_idx)//2)
+    #    #sub_idx = random.randint(1, len(new_keyword_idx)//3)
+    #sub_idx = random.sample(new_keyword_idx, k=sub_idx)
+    ##print(f"sub_idx: {sub_idx}")
+    #assert len(negative_candidate) == 3, "negative_candidate must contain 3 candidates"
+    #one_negative_candidate = random.choice(negative_candidate)
+    #assert len(one_negative_candidate["phn_label"]) == len(one_negative_candidate["md_label"]), "phn_label and md_label in negative candidate must be in the same length"
+    #negative_keyword_candidate = one_negative_candidate["phn_label"][pos: pos+keyword_length]
+    #negative_md_candidate = one_negative_candidate["md_label"][pos: pos+keyword_length]
+    #dice = random.uniform(0,1)
+    #if dice > 0.3:
+    #    for i in new_keyword_idx:
+    #        if i in sub_idx:
+    #            keyword[i] = one_negative_candidate["phn_label"][pos + i]
+    #            md_label[i] = one_negative_candidate["md_label"][pos + i]
+    
+    return keyword, md_label
+
+def sample_keyword(phn_label, md_label=None, negative_candidate=None, n_word=2):
+
+    phn_len = len(phn_label)
+    pos = phn_len // 2
+    keyword = phn_label[pos:pos+n_word]
+    phn_label = unfold_list(phn_label)
+    if md_label != None:
+        #print("given md test set")
+        md_label = md_label[pos:pos+n_word]
+        md_label = unfold_list(md_label)
+    else:
+        keyword, md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
+    keyword = unfold_list(keyword)
+    md_label = unfold_list(md_label)
+    keyword_len = torch.tensor([len(keyword)])
+    keyword = torch.tensor(keyword, dtype=torch.long)
+    md_label = torch.tensor(md_label, dtype=torch.float)
+    phn_label = torch.tensor(phn_label, dtype=torch.long)
+    return keyword.view(1, -1), keyword_len, md_label.view(1, -1), phn_label.view(1, -1)
+
+def sample_all_keywords(phn_label, md_label=None, negative_candidate=None, n_word=2):
+
+    phn_len = len(phn_label)
+    keywords = []
+    keyword_lens = []
+    md_labels = []
+    pos = 0 
+    n_word = phn_len
+    #for pos in range(0, phn_len, n_word):
+    #    if pos + 2*n_word >= phn_len:
+    keyword = phn_label[pos:phn_len]
+    if md_label != None:
+        #print("given md test set")
+        kw_md_label = md_label[pos:phn_len]
+        kw_md_label = unfold_list(kw_md_label)
+    else:
+        keyword, kw_md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
+    keyword = unfold_list(keyword)
+    kw_md_label = unfold_list(kw_md_label)
+    keyword_len = torch.tensor([len(keyword)])
+    keyword = torch.tensor(keyword, dtype=torch.long)
+    kw_md_label = torch.tensor(kw_md_label, dtype=torch.float)
+    keywords.append(keyword.view(1, -1))
+    keyword_lens.append(keyword_len)
+    md_labels.append(kw_md_label.view(1, -1))
+    #break
+    #    else:
+    #        keyword = phn_label[pos:pos+n_word]
+    #        if md_label != None:
+    #            #print("given md test set")
+    #            kw_md_label = md_label[pos:pos+n_word]
+    #            kw_md_label = unfold_list(kw_md_label)
+    #        else:
+    #            keyword, kw_md_label = negative_data_aug(keyword, pos, negative_candidate=negative_candidate)
+    #        keyword = unfold_list(keyword)
+    #        kw_md_label = unfold_list(kw_md_label)
+    #        keyword_len = torch.tensor([len(keyword)])
+    #        keyword = torch.tensor(keyword, dtype=torch.long)
+    #        kw_md_label = torch.tensor(kw_md_label, dtype=torch.float)
+    #        keywords.append(keyword.view(1, -1))
+    #        keyword_lens.append(keyword_len)
+    #        md_labels.append(kw_md_label.view(1, -1))
+    phn_label = unfold_list(phn_label)
+    phn_label = torch.tensor(phn_label, dtype=torch.long)
+    
+    return keywords, keyword_lens, md_labels, phn_label.view(1, -1)
+
+def extract_fbank(wav_path, config):
+    wav, sr = torchaudio.load(wav_path)
+    if sr != 16000:
+        raise TypeError('wav should be 16k sample rate')
+    
+    fbank = FBANK_EXTRACTOR(wav, **config)
+    fbank_len, dim = fbank.size()
+    return fbank.view(1, fbank_len, dim), torch.tensor([fbank_len], dtype=torch.long)
+
+def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_path=None, load_if_exists=False):
+    """Main run. If load_results_path is provided or load_if_exists and results file exists, load and skip inference."""
+    
+    os.makedirs(save_dir, exist_ok=True)
+
+    results_path = os.path.join(save_dir, f"results_{test_id}.npz")
+    # if explicit load path provided, prefer it
+    if load_results_path is not None:
+        print(f"Loading results from provided path: {load_results_path}")
+        hyp_np, gd_np, _ = load_results(load_results_path)
+        hyp = torch.from_numpy(hyp_np)
+        gd = torch.from_numpy(gd_np)
+        # go to stats
+        plot_result(hyp, gd, save_dir, test_id)
+        plot_distribution(hyp, gd, save_dir, test_id)
+        compute_dcf(gd, hyp, save_dir, test_id, prior_target=l2arctic_prior)
+        return
+
+    # if load_if_exists is set and results file exists, load it and skip inference
+    if load_if_exists and os.path.exists(results_path):
+        print(f"Found existing results at {results_path}, loading...")
+        hyp_np, gd_np, _ = load_results(results_path)
+        hyp = torch.from_numpy(hyp_np)
+        gd = torch.from_numpy(gd_np)
+        plot_result(hyp, gd, save_dir, test_id)
+        plot_distribution(hyp, gd, save_dir, test_id)
+        compute_dcf(gd, hyp, save_dir, test_id, prior_target=l2arctic_prior)
+        return
+
+    ckpt = torch.load(ckpt, map_location='cpu')
+    model_state_dict = ckpt['model']
+
+    data_config = config['data_config']
+    fbank_config = data_config['sph_config']['feats_config']
+    #data_list_file = 'md_data_list/datalist.test.l2arctic.txt'
+    #data_list_file = 'train-clean-360/test_100.txt.phn'
+    #data_list_file = 'test.datalist.phn'
+    #data_list_file = 'l2.test.datalist'
+    #from model import m_dict
+    #model_arch_name = config['model_arch']
+    #model_arch = m_dict[model_arch_name]
+
+    model_config = config['model_config']
+    model = TransformerKWSPhone_hubert_wenet_embed_3md_adaptor(**model_config)
+    #model = model_arch(**model_config)
+    model.load_state_dict(model_state_dict)
+    model.eval()
+    
+    
+    tr_list = read_list(data_list_file, split_cv=False, shuffle=True)
+
+    hyp = torch.tensor([])
+    gd = torch.tensor([])
+    ids = []  # per-frame id: {uttid}.{phn_index}
+    if 'save_multi' in globals() and save_multi:
+        hyp1 = torch.tensor([])
+        hyp2 = torch.tensor([])
+        hyp3 = torch.tensor([])
+    e = 0
+    t = 0
+    for i, one_test_obj in enumerate(tr_list):
+        if i < 1000 and i % 100 == 0:
+            print(f"Processing {i}th sample")
+        elif i % 1000 == 0:
+            print(f"Processing {i}th sample")
+        one_test_obj = json.loads(one_test_obj)
+        uttid = one_test_obj['key']
+        wav_path = one_test_obj['sph']
+        #wav_path = PATTERN.sub('', one_test_obj['sph'])
+        phn_label = one_test_obj['phn_label']
+        md_label = one_test_obj.get('md_label', None)
+        negative_candidate = one_test_obj.get('negative_candidate', None)
+        #assert negative_candidate != None
+        #md_label = torch.tensor(md_label)
+        #md_label = md_label.view(1,-1)
+        #phn_label = unfold_list(phn_label)
+        #aug_keyword_len = torch.tensor([len(phn_label)])
+        #aug_keyword = torch.tensor([phn_label])
+
+        #phn_label = torch.tensor([phn_label])
+        #aug_keyword = aug_keyword.view(1,-1)
+        #wavs = torchaudio.load(wav_path)
+        #print(f"torchaudio.load(wav_path) length: {len(wavs)}")
+        wav = torch.load(wav_path)
+        #wav = torchaudio.load(wav_path)[0]
+        #print(f"wavs[0] size: {wav.shape}")
+        speech = wav.unsqueeze(0).to('cpu')
+        #speech = wav.to('cpu')
+        #print(f"speech size: {speech.shape}")
+        #speech = wav.to('cuda:0')
+        #speech = wav.unsqueeze(0).to('cuda:0')
+        #speech_len = torch.tensor([speech.size(0)], device='cpu')
+        speech_len = torch.tensor([speech.size(1)], device='cpu')
+        #speech_len = torch.tensor([speech.size(1)], device='cuda:0')
+        #print(f"speech len: {speech_len}")
+
+
+        fbank_feats = speech
+        fbank_len = speech_len
+        #fbank_feats, fbank_len = extract_fbank(wav_path, fbank_config)
+        if fbank_len < 7:
+            print(f"Skip sample for too short speech feature({fbank_len})")
+            continue
+        aug_keywords, aug_keyword_lens, aug_md_labels, phn_label = sample_all_keywords(phn_label, md_label, negative_candidate, n_word=4)
+        #aug_keyword, aug_keyword_len, md_label, phn_label = sample_keyword(phn_label, md_label, negative_candidate)
+        for i in range(len(aug_keywords)):
+            aug_keyword = aug_keywords[i]
+            aug_keyword_len = aug_keyword_lens[i]
+            aug_md_label = aug_md_labels[i]
+            #print(f"aug_keyword shape: {aug_keyword.shape}, aug_keyword_len shape: {aug_keyword_len.shape}, md_label shape: {md_label.shape}, phn_label shape: {phn_label.shape}")
+            #print(f"aug_keyword: {aug_keyword}, aug_keyword_len: {aug_keyword_len}")
+            #print(f"md_label: {md_label}")
+            #print(f"phn_label: {phn_label}")
+            input_data = (fbank_feats, fbank_len, aug_keyword, aug_keyword_len, aug_md_label)
+
+            # multi-head inference (preferred) with backward compatible fallback
+            if hasattr(model, "evaluate_multi"):
+                det1, det2, det3, asr_result = model.evaluate_multi(input_data)
+                det_probs = [det1.view(-1), det2.view(-1), det3.view(-1)]
+            else:
+                det_result, asr_result = model.evaluate(input_data)
+                det_result = det_result.view(-1)
+                det_probs = [det_result, det_result, det_result]
+
+            # apply temperature scaling:
+            # - scalar temperature: calibrate mean only (backward compatible)
+            # - list/tuple of 3: calibrate per-head then mean
+            det_calib, det_mean = apply_temperature_to_probs(det_probs, temperature)
+
+            # ids for each phone position
+            ids.extend([f"{uttid}.{k}" for k in range(det_mean.numel())])
+
+            # save mean posterior as main hyp (same behavior as old code)
+            hyp = torch.cat([hyp, det_mean], dim=-1)
+            gd = torch.cat([gd, aug_md_label.view(-1)], dim=-1)
+
+            # optional: save per-head posteriors
+            if 'save_multi' in globals() and save_multi:
+                if det_calib is not None:
+                    hyp1 = torch.cat([hyp1, det_calib[0]], dim=-1)
+                    hyp2 = torch.cat([hyp2, det_calib[1]], dim=-1)
+                    hyp3 = torch.cat([hyp3, det_calib[2]], dim=-1)
+                else:
+                    hyp1 = torch.cat([hyp1, det_probs[0]], dim=-1)
+                    hyp2 = torch.cat([hyp2, det_probs[1]], dim=-1)
+                    hyp3 = torch.cat([hyp3, det_probs[2]], dim=-1)
+
+            asr_result = remove_duplicates_and_blank(asr_result.view(-1))
+            one_error, one_total, one_cer = compute_cer(asr_result, phn_label.view(-1), detail=True)
+            e += one_error
+            t += one_total
+    print (1.0*e/t)
+    with open(os.path.join(save_dir, f"cer_{test_id}.txt"), 'w') as f_cer:
+        f_cer.write(f"CER: {1.0*e/t}\n")
+    # add sample to hyp and gd, as if none of addition errors is detected, make recall comparable
+    hyp = torch.cat([hyp, torch.zeros(num_add, dtype=hyp.dtype, device=hyp.device)], dim=-1)
+    gd = torch.cat([gd, torch.ones(num_add, dtype=gd.dtype, device=gd.device)], dim=-1)
+    if num_add > 0:
+        ids.extend([f"__add__.{k}" for k in range(num_add)])
+    # save results
+    if 'save_multi' in globals() and save_multi:
+        save_results(hyp, gd, ids, save_dir, test_id, hyp_multi={'hyp1': hyp1, 'hyp2': hyp2, 'hyp3': hyp3})
+    else:
+        save_results(hyp, gd, ids, save_dir, test_id)
+
+    plot_result(hyp, gd, save_dir, test_id)
+    plot_distribution(hyp, gd, save_dir, test_id)
+    #compute_dcf(gd, hyp, save_dir, test_id, prior_target=0.5)
+    compute_dcf(gd, hyp, save_dir, test_id, prior_target=l2arctic_prior)
+    #compute_dcf(gd, hyp, save_dir, test_id)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--temp_file", default=None, type=str,
+                        help="Optional .pt file saved by fit_temperature.py containing key 'temperature'.")
+    parser.add_argument("--temperature", default=None, type=float,
+                        help="Optional temperature value (overrides temp_file if provided).")
+
+    parser.add_argument("config")
+    parser.add_argument("checkpoint")
+    parser.add_argument("data_list_file")
+    parser.add_argument("save_dir")
+    parser.add_argument("test_id")
+
+    # 新增参数，有默认值
+    parser.add_argument("--num-add", type=int, default=0,
+                        help="number of addition error which is removed from datalist, for recall punishment")
+    parser.add_argument("--load-results", type=str, default=None,
+                        help="path to existing results (.npz or .csv) to load instead of running inference")
+    parser.add_argument("--load-if-exists", action='store_true',
+                        help="if set and results_{test_id}.npz exists in save_dir, load it and skip inference")
+    parser.add_argument("--compare", nargs='+', default=None,
+                        help="list of results files (.npz/.csv) to compare; if provided, script will plot combined PR/ROC and exit")
+    parser.add_argument("--compare-labels", nargs='+', default=None,
+                        help="optional labels for compare files (in same order)")
+    parser.add_argument("--save-multi", action='store_true',
+                        help="if set, also save per-head posterior as hyp1/hyp2/hyp3 in results_{test_id}.npz/.csv")
+
+    args = parser.parse_args()
+
+    # whether to save per-head posteriors (hyp1/hyp2/hyp3) for multi-head models
+    save_multi = bool(args.save_multi)
+
+    # Load temperature for calibration (optional)
+    temperature = None
+    if args.temp_file is not None:
+        tmp = torch.load(args.temp_file, map_location="cpu")
+        temperature = tmp.get("temperature", None)
+        # temperature can be float or list/dict for multi-head
+        print(f"[calib] loaded temperature={temperature} from {args.temp_file}")
+    if args.temperature is not None:
+        temperature = float(args.temperature)
+        print(f"[calib] override temperature={temperature} from --temperature")
+
+    config = args.config
+    ckpt = args.checkpoint
+    data_list_file = args.data_list_file
+    save_dir = args.save_dir
+    test_id = args.test_id
+    num_add = args.num_add
+    load_results_path = args.load_results
+    load_if_exists = args.load_if_exists
+    compare_files = args.compare
+    compare_labels = args.compare_labels
+
+    print("num_add =", num_add)
+
+    YamlIncludeConstructor.add_to_loader_class(loader_class=yaml.FullLoader)
+    config = yaml.load(open(config),Loader=yaml.FullLoader)
+    # If compare mode: plot multiple given files
+    if compare_files is not None:
+        # expand relative paths if needed
+        cf = []
+        for f in compare_files:
+            cf.append(f)
+        labels = compare_labels if compare_labels is not None else None
+        plot_multiple_results(cf, labels, save_dir, test_id)
+    else:
+        run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_path=load_results_path, load_if_exists=load_if_exists)
+

@@ -472,7 +472,13 @@ def process_sampled_keyword_from_label_md(
     for sample in data:
         new_sph_label = copy.deepcopy(sample['sph_label'])
         new_phn_label = copy.deepcopy(sample['phn_label'])
-        md_label = copy.deepcopy(sample['md_label'])
+        md_label_items = []
+        for key in sorted(sample.keys()):
+            matched = re.fullmatch(r'md_label(\d+)', key)
+            if matched:
+                md_label_items.append((int(matched.group(1)), copy.deepcopy(sample[key])))
+        if not md_label_items:
+            md_label_items.append((1, copy.deepcopy(sample['md_label'])))
         if 'bpe_label' in sample:
             new_bpe_label = copy.deepcopy(sample['bpe_label'])
             bpe_candidate = copy.deepcopy(sample['b_kw_candidate'])
@@ -480,18 +486,46 @@ def process_sampled_keyword_from_label_md(
             new_bpe_label = copy.deepcopy(new_phn_label)
             bpe_candidate = copy.deepcopy(sample['kw_candidate'])
         corrupt_label = None if 'mix_phn_label' not in sample else sample['mix_phn_label']
-        kw, kw_pos, kw_length, pos, target, md_label = utils.make_keyword_md(
-            candidate_seq=new_phn_label, negative_seq=sample['neg_candidate'], md_label=md_label,
+        kw, kw_pos, kw_length, pos, target, primary_md_label = utils.make_keyword_md(
+            candidate_seq=new_phn_label, negative_seq=sample['neg_candidate'], md_label=md_label_items[0][1],
             positive_prob=positive_prob, neg_len=neg_len, kw_position_candidate=sample['kw_candidate'],
             corrupt_label=corrupt_label, max_keyword_len=max_keyword_len
         )
-        kw, new_sph_label, new_bpe_label, kw_pos, md_label = utils.inject_special_token_md(
-            keyword=kw, keyword_length=kw_length, positive=pos, label=new_sph_label, 
-            keyword_pos=kw_pos, special_token=special_token,  bpe_label=new_bpe_label, bpe_candidate=bpe_candidate,
-            phonetic_auxiliary=phonetic_auxiliary, md_label=md_label, phone_data_aug=phone_data_aug
-        )
 
-        sample.update({'keyword': kw, 'phn_label': new_sph_label, 'bpe_label': new_bpe_label, 'target': target, 'md_label': md_label}) 
+        rng_state = random.getstate()
+        md_label_outputs = []
+        kw_out = None
+        sph_label_out = None
+        bpe_label_out = None
+        kw_pos_out = None
+        for idx, (_, md_label_value) in enumerate(md_label_items):
+            random.setstate(rng_state)
+            effective_md_label = primary_md_label if idx == 0 else md_label_value
+            kw_one, sph_label_one, bpe_label_one, kw_pos_one, md_label_one = utils.inject_special_token_md(
+                keyword=kw, keyword_length=kw_length, positive=pos, label=copy.deepcopy(new_sph_label),
+                keyword_pos=kw_pos, special_token=special_token, bpe_label=copy.deepcopy(new_bpe_label), bpe_candidate=bpe_candidate,
+                phonetic_auxiliary=phonetic_auxiliary, md_label=effective_md_label, phone_data_aug=phone_data_aug
+            )
+            if idx == 0:
+                kw_out = kw_one
+                sph_label_out = sph_label_one
+                bpe_label_out = bpe_label_one
+                kw_pos_out = kw_pos_one
+            md_label_outputs.append(md_label_one)
+
+        sample.update({
+            'keyword': kw_out,
+            'phn_label': sph_label_out,
+            'bpe_label': bpe_label_out,
+            'target': target,
+            'md_label': md_label_outputs[0],
+        })
+        for (md_idx, _), md_label_value in zip(md_label_items, md_label_outputs):
+            sample.update({f'md_label{md_idx}': md_label_value})
+
+        if kw_pos_out is not None:
+            sample.update({'kw_pos': kw_pos_out})
+
         yield sample
 
 # process permuate label

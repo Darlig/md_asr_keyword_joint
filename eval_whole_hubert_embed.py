@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from yamlinclude import YamlIncludeConstructor
 from local.utils import  read_list, remove_duplicates_and_blank, compute_cer
 from data.loader.data_utils import unfold_list
-from model.TransformerKWSPhone_hubert_wenet_embed import TransformerKWSPhone_hubert_wenet_embed
+from model.TransformerKWSPhone_hubert_wenet import TransformerKWSPhone_hubert_wenet
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
 import csv
 
@@ -425,6 +425,26 @@ def extract_fbank(wav_path, config):
     fbank_len, dim = fbank.size()
     return fbank.view(1, fbank_len, dim), torch.tensor([fbank_len], dtype=torch.long)
 
+
+def build_embed_model(model_config, model_state_dict):
+    model_config = dict(model_config)
+    model_config["input_mode"] = "embedding"
+    model = TransformerKWSPhone_hubert_wenet(**model_config)
+    model.load_state_dict(model_state_dict, strict=False)
+    model.eval()
+    return model
+
+
+def unpack_eval_outputs(eval_outputs):
+    if isinstance(eval_outputs, tuple) and len(eval_outputs) >= 2:
+        det_outputs = list(eval_outputs[:-1])
+        hyp = eval_outputs[-1]
+        if len(det_outputs) == 1:
+            return det_outputs[0], hyp, det_outputs
+        det_mean = torch.stack(det_outputs, dim=0).mean(dim=0)
+        return det_mean, hyp, det_outputs
+    raise ValueError("Unexpected evaluate() outputs")
+
 def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_path=None, load_if_exists=False):
     """Main run. If load_results_path is provided or load_if_exists and results file exists, load and skip inference."""
     
@@ -468,10 +488,7 @@ def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_p
     #model_arch = m_dict[model_arch_name]
 
     model_config = config['model_config']
-    model = TransformerKWSPhone_hubert_wenet_embed(**model_config)
-    #model = model_arch(**model_config)
-    model.load_state_dict(model_state_dict)
-    model.eval()
+    model = build_embed_model(model_config, model_state_dict)
     
     
     tr_list = read_list(data_list_file, split_cv=False, shuffle=True)
@@ -533,7 +550,7 @@ def run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_p
             #print(f"md_label: {md_label}")
             #print(f"phn_label: {phn_label}")
             input_data = (fbank_feats, fbank_len, aug_keyword, aug_keyword_len, aug_md_label) 
-            det_result, asr_result = model.evaluate(input_data)
+            det_result, asr_result, _det_heads = unpack_eval_outputs(model.evaluate(input_data))
             det_result = det_result.view(-1)
             hyp = torch.cat([hyp, det_result], dim=-1)
             gd = torch.cat([gd, aug_md_label.view(-1)], dim=-1)
@@ -604,4 +621,3 @@ if __name__ == '__main__':
         plot_multiple_results(cf, labels, save_dir, test_id)
     else:
         run(config, ckpt, data_list_file, save_dir, test_id, num_add, load_results_path=load_results_path, load_if_exists=load_if_exists)
-

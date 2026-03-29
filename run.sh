@@ -1,4 +1,15 @@
+# data prepare
 
+# cross validation folds
+python make_cross_valid_data.py resource/uych_release/datalist_uych_release_nostar_sph.jsonl 10 uych_release_sph_cv10/
+python make_cross_valid_data.py resource/uych_release/datalist_uych_release_nostar_md.jsonl 10 uych_release_md_cv10/
+python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno20_nostar_md.jsonl 10 uych_anno20_md_cv10/
+python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno21_nostar_md.jsonl 10 uych_anno21_md_cv10/
+python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno30_nostar_md.jsonl 10 uych_anno30_md_cv10/
+python make_cross_valid_data.py resource/uych_release/datalist_uych_release_test_emb.jsonl 10 uych_release_test_emb_cv10
+python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno20_test_emb.jsonl 10 uych_anno20_test_emb_cv10
+python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno21_test_emb.jsonl 10 uych_anno21_test_emb_cv10
+python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno30_test_emb.jsonl 10 uych_anno30_test_emb_cv10
 
 # Pretrain
 # train

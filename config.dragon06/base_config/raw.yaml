@@ -1,3 +1,0 @@
-data_type: raw
-feats_type: fbank
-feats_config: !include config/feats_config/fbank.yaml

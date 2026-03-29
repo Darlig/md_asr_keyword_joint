@@ -10,6 +10,7 @@ python make_cross_valid_data.py resource/uych_release/datalist_uych_release_test
 python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno20_test_emb.jsonl 10 uych_anno20_test_emb_cv10
 python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno21_test_emb.jsonl 10 uych_anno21_test_emb_cv10
 python make_cross_valid_data.py resource/uych_3anno/datalist_uych_anno30_test_emb.jsonl 10 uych_anno30_test_emb_cv10
+python make_cross_valid_data_with_calib.py resource/uych_3anno/datalist_uych_3anno_test_md_vote.jsonl 10 uych_3anno_test_md_vote_emb_with_calib_cv10
 
 # Pretrain
 # train
@@ -26,6 +27,7 @@ python eval_whole_hubert_embed.py config/pretrain_hubert_aishell2_data_aug.yaml 
 # Target Norm
 
 # fold1
+
 # train
 mkdir -p exp/md_hubert_aishell2_ft_uych_release_train_fold1_sph_md_aug; cp exp/md_hubert_aishell2_data_aug/kwatt_asr_24.pt exp/md_hubert_aishell2_ft_uych_release_train_fold1_sph_md_aug/
 bash run_train.sh --config config/pretrain_hubert_aishell2_ft_uych_release_fold1_sph_md_aug.yaml --GPU 0,1 --port 22123
@@ -38,6 +40,7 @@ python eval_whole_hubert_embed.py config/pretrain_hubert_aishell2_ft_uych_releas
 # Perception Norm
 
 # fold1
+
 # collective
 # train
 mkdir -p exp/md_hubert_aishell2_ft_uych_release_train_fold1_md; cp exp/md_hubert_aishell2_data_aug/kwatt_asr_24.pt exp/md_hubert_aishell2_ft_uych_release_train_fold1_md/
@@ -77,12 +80,13 @@ python eval_whole_hubert_embed.py config/pretrain_hubert_aishell2_ft_uych_anno30
 
 # multi annotators
 
-# fold1
 # score average
+# fold1
 python fit_temperature.py --config config/pretrain_hubert_aishell2_ft_uych_anno20_fold1_md.yaml --ckpt exp/md_hubert_aishell2_ft_uych_anno20_train_fold1_md/kwatt_asr_avg_40-50.pt --datalist uych_3anno_test_md_vote_emb_with_calib_cv10/calib_fold1.jsonl --out exp/md_hubert_aishell2_ft_uych_anno20_train_fold1_md/temperature_for_3anno_md_vote.pt
 python eval_whole_hubert_embed_calib2.py --temp_file exp/md_hubert_aishell2_ft_uych_anno20_train_fold1_md/temperature_for_3anno_md_vote.pt config/pretrain_hubert_aishell2_ft_uych_anno20_fold1_md.yaml exp/md_hubert_aishell2_ft_uych_anno20_train_fold1_md/kwatt_asr_avg_40-50.pt uych_3anno_test_md_vote_emb_with_calib_cv10/val_fold1.jsonl exp/md_hubert_aishell2_ft_uych_anno20_train_fold1_md/result_avg40-50/ uych_3anno_test_md_vote_calib_3anno_md_vote
 
 # voting model
+# fold1
 # train
 mkdir -p exp/md_hubert_aishell2_ft_uych_3anno_md_vote_train_fold1_md_only_bce_freeze_speech; cp exp/md_hubert_aishell2_data_aug/kwatt_asr_24.pt exp/md_hubert_aishell2_ft_uych_3anno_md_vote_train_fold1_md_only_bce_freeze_speech/
 bash run_train_freeze_speech.sh --config config/pretrain_hubert_aishell2_ft_uych_3anno_md_vote_fold1_md_only_bce_freeze_speech.yaml --GPU 0,1 --port 22123

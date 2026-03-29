@@ -1,0 +1,14 @@
+
+
+# Pretrain
+# train
+bash run_train.sh --config config/pretrain_hubert_aishell2_data_aug.yaml --GPU 0,1 --port 22123
+# eval
+python eval_whole_hubert_embed.py config/pretrain_hubert_aishell2_data_aug.yaml exp/md_hubert_aishell2_data_aug/kwatt_asr_25.pt resource/uych_release/datalist_uych_release_test_emb.jsonl exp/md_hubert_aishell2_data_aug/result_ep25 uych_release
+python eval_whole_hubert_embed.py config/pretrain_hubert_aishell2_data_aug.yaml exp/md_hubert_aishell2_data_aug/kwatt_asr_25.pt resource/uych_3anno/datalist_uych_anno20_test_emb.jsonl exp/md_hubert_aishell2_data_aug/result_ep25 uych_anno20
+python eval_whole_hubert_embed.py config/pretrain_hubert_aishell2_data_aug.yaml exp/md_hubert_aishell2_data_aug/kwatt_asr_25.pt resource/uych_3anno/datalist_uych_anno21_test_emb.jsonl exp/md_hubert_aishell2_data_aug/result_ep25 uych_anno21
+python eval_whole_hubert_embed.py config/pretrain_hubert_aishell2_data_aug.yaml exp/md_hubert_aishell2_data_aug/kwatt_asr_25.pt resource/uych_3anno/datalist_uych_anno30_test_emb.jsonl exp/md_hubert_aishell2_data_aug/result_ep25 uych_anno30
+
+
+# Fine-tune
+
